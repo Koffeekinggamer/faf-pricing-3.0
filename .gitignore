@@ -1,5 +1,7 @@
 *.xlsx
+*.xlsm
 *.xls
+*.zip
 uploads/
 __pycache__/
 .pytest_cache/
