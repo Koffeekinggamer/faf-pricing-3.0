@@ -7,18 +7,25 @@ from pathlib import Path
 
 from reportlab.lib import colors
 from reportlab.lib.enums import TA_CENTER, TA_LEFT
-from reportlab.lib.pagesizes import letter
+from reportlab.lib.pagesizes import landscape, letter
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import inch
 from reportlab.platypus import (
+    BaseDocTemplate,
+    Frame,
+    PageTemplate,
     Paragraph,
-    SimpleDocTemplate,
     Spacer,
     Table,
     TableStyle,
 )
 
 from scripts.dealer_book import ProcessedRow, RowKind, collapse_blank_rows
+from scripts.pdf_table_layout import (
+    should_flush_wide_block,
+    sku_table_flowables,
+    wide_table_flowables,
+)
 from scripts.pricing_lib import assert_no_approx
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -28,6 +35,11 @@ FAF_MOSS = colors.HexColor("#454C4B")
 FAF_BG = colors.HexColor("#F4EFE4")
 FAF_TEXT = colors.HexColor("#1d2726")
 FAF_MUTED = colors.HexColor("#7d8281")
+
+MARGIN_L = 0.55 * inch
+MARGIN_R = 0.55 * inch
+MARGIN_TOP = 0.85 * inch
+MARGIN_BOTTOM = 0.65 * inch
 
 
 def _format_updated(iso_date: str) -> str:
@@ -48,6 +60,35 @@ def _p(text: str, style: ParagraphStyle) -> Paragraph:
     return Paragraph(safe, style)
 
 
+def _prose_paragraph(cells: list, body: ParagraphStyle) -> Paragraph | None:
+    parts: list[str] = []
+    for c in cells:
+        t = str(c).strip()
+        if not t:
+            continue
+        if t.startswith(("-", "•", "*")):
+            parts.append(t)
+        else:
+            parts.append(t)
+    if not parts:
+        return None
+    if len(parts) == 1:
+        joined = parts[0]
+    elif all(p.startswith(("-", "•", "*")) for p in parts):
+        joined = "<br/>".join(_esc_fragment(p) for p in parts)
+    else:
+        joined = "<br/><br/>".join(_esc_fragment(p) for p in parts)
+    return _p(joined, body)
+
+
+def _esc_fragment(text: str) -> str:
+    return (
+        text.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+    )
+
+
 def build_retail_pdf(
     grid: list[list],
     *,
@@ -55,9 +96,6 @@ def build_retail_pdf(
     updated: str,
     output_path: Path,
 ) -> None:
-    """Legacy flat-grid PDF (simple CSV / small sheets)."""
-    from scripts.dealer_book import ProcessedRow
-
     rows = [
         ProcessedRow(RowKind.PROSE, [str(c) for c in row if c not in (None, "")])
         for row in grid
@@ -79,15 +117,6 @@ def build_retail_pdf_processed(
     processed = collapse_blank_rows(processed)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    doc = SimpleDocTemplate(
-        str(output_path),
-        pagesize=letter,
-        leftMargin=0.55 * inch,
-        rightMargin=0.55 * inch,
-        topMargin=0.85 * inch,
-        bottomMargin=0.65 * inch,
-        title=f"{builder_name} — Foothills Amish Furniture",
-    )
 
     styles = getSampleStyleSheet()
     body = ParagraphStyle(
@@ -97,6 +126,7 @@ def build_retail_pdf_processed(
         fontSize=8,
         leading=10,
         textColor=FAF_TEXT,
+        alignment=TA_LEFT,
     )
     title_style = ParagraphStyle(
         "fafTitle",
@@ -129,118 +159,29 @@ def build_retail_pdf_processed(
         fontName="Helvetica-Bold",
     )
 
-    story = []
+    story: list = []
     table_buf: list[list[str]] = []
+    wide_buf: list[list[str]] = []
 
     def flush_sku_table():
         nonlocal table_buf
         if not table_buf:
             return
-        t = Table(table_buf, colWidths=[2.4 * inch, 1.1 * inch, 1.05 * inch, 1.05 * inch])
-        t.setStyle(
-            TableStyle(
-                [
-                    ("BACKGROUND", (0, 0), (-1, 0), FAF_MOSS),
-                    ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-                    ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-                    ("FONTSIZE", (0, 0), (-1, -1), 8),
-                    ("GRID", (0, 0), (-1, -1), 0.25, FAF_MUTED),
-                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                    ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, FAF_BG]),
-                    ("TOPPADDING", (0, 0), (-1, -1), 3),
-                    ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
-                ]
-            )
-        )
-        story.append(t)
-        story.append(Spacer(1, 6))
+        story.extend(sku_table_flowables(table_buf, body_style=body))
         table_buf = []
 
-    for pr in processed:
-        if pr.kind in (RowKind.SKU, RowKind.TABLE_HEADER):
-            if pr.kind == RowKind.TABLE_HEADER and table_buf:
-                flush_sku_table()
-            table_buf.append([str(c) for c in pr.cells])
-            continue
-
-        flush_sku_table()
-
-        if pr.kind == RowKind.BLANK:
-            story.append(Spacer(1, 4))
-        elif pr.kind == RowKind.TITLE:
-            story.append(_p(pr.cells[0], title_style))
-        elif pr.kind == RowKind.SECTION:
-            story.append(_p(pr.cells[0], section_style))
-        elif pr.kind == RowKind.SUBHEAD:
-            story.append(_p(pr.cells[0], subhead_style))
-        elif pr.kind == RowKind.INDEX:
-            if len(pr.cells) >= 2:
-                data = [pr.cells[i : i + 2] for i in range(0, len(pr.cells), 2)]
-                for pair in data:
-                    while len(pair) < 2:
-                        pair.append("")
-                t = Table(data, colWidths=[3.25 * inch, 3.25 * inch])
-                t.setStyle(
-                    TableStyle(
-                        [
-                            ("FONTSIZE", (0, 0), (-1, -1), 9),
-                            ("TEXTCOLOR", (0, 0), (-1, -1), FAF_TEXT),
-                            ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
-                        ]
-                    )
-                )
-                story.append(t)
-            elif pr.cells:
-                story.append(_p(" · ".join(pr.cells), body))
-        elif pr.kind == RowKind.WIDE:
-            cells = [str(c) for c in pr.cells]
-            while cells and not cells[-1].strip():
-                cells.pop()
-            if not any(c.strip() for c in cells):
-                continue
-            ncol = len(cells)
-            usable = 7.4 * inch
-            first_w = min(1.35 * inch, usable * 0.22)
-            rest_w = (usable - first_w) / max(ncol - 1, 1)
-            widths = [first_w] + [rest_w] * (ncol - 1) if ncol > 1 else [usable]
-            t = Table([cells], colWidths=widths)
-            t.setStyle(
-                TableStyle(
-                    [
-                        ("FONTSIZE", (0, 0), (-1, -1), 6.5),
-                        ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                        ("TOPPADDING", (0, 0), (-1, -1), 1),
-                        ("BOTTOMPADDING", (0, 0), (-1, -1), 1),
-                    ]
-                )
-            )
-            story.append(t)
-        elif pr.kind == RowKind.PROSE:
-            left = pr.cells[0] if pr.cells else ""
-            right = pr.cells[1] if len(pr.cells) > 1 else ""
-            if right:
-                t = Table([[left, right]], colWidths=[3.25 * inch, 3.25 * inch])
-                t.setStyle(
-                    TableStyle(
-                        [
-                            ("FONTSIZE", (0, 0), (-1, -1), 8),
-                            ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                            ("TOPPADDING", (0, 0), (-1, -1), 1),
-                            ("BOTTOMPADDING", (0, 0), (-1, -1), 1),
-                        ]
-                    )
-                )
-                story.append(t)
-            else:
-                story.append(_p(left, body))
-
-    flush_sku_table()
+    def flush_wide_block():
+        nonlocal wide_buf
+        if not wide_buf:
+            return
+        story.extend(wide_table_flowables(wide_buf, body_style=body))
+        wide_buf = []
 
     page_count_box = {"n": 0}
 
-    def on_page(canvas, _doc):
+    def draw_header_footer(canvas, _doc):
         canvas.saveState()
-        page_w, page_h = letter
+        page_w, page_h = canvas._pagesize
         header_h = 0.55 * inch
         canvas.setFillColor(FAF_MOSS)
         canvas.rect(0, page_h - header_h, page_w, header_h, fill=1, stroke=0)
@@ -286,5 +227,98 @@ def build_retail_pdf_processed(
         page_count_box["n"] = canvas.getPageNumber()
         canvas.restoreState()
 
-    doc.build(story, onFirstPage=on_page, onLaterPages=on_page)
+    pw, ph = letter
+    lw, lh = landscape(letter)
+    portrait_frame = Frame(
+        MARGIN_L,
+        MARGIN_BOTTOM,
+        pw - MARGIN_L - MARGIN_R,
+        ph - MARGIN_TOP - MARGIN_BOTTOM,
+        id="portrait_frame",
+    )
+    landscape_frame = Frame(
+        MARGIN_L,
+        MARGIN_BOTTOM,
+        lw - MARGIN_L - MARGIN_R,
+        lh - MARGIN_TOP - MARGIN_BOTTOM,
+        id="landscape_frame",
+    )
+
+    doc = BaseDocTemplate(
+        str(output_path),
+        pagesize=letter,
+        pageTemplates=[
+            PageTemplate(
+                id="portrait",
+                frames=[portrait_frame],
+                onPage=draw_header_footer,
+            ),
+            PageTemplate(
+                id="landscape",
+                frames=[landscape_frame],
+                pagesize=landscape(letter),
+                onPage=draw_header_footer,
+            ),
+        ],
+        title=f"{builder_name} — Foothills Amish Furniture",
+    )
+
+    for pr in processed:
+        if pr.kind in (RowKind.SKU, RowKind.TABLE_HEADER):
+            flush_wide_block()
+            if pr.kind == RowKind.TABLE_HEADER and table_buf:
+                flush_sku_table()
+            table_buf.append([str(c) for c in pr.cells])
+            continue
+
+        if pr.kind == RowKind.BLANK:
+            story.append(Spacer(1, 4))
+            continue
+
+        if pr.kind == RowKind.WIDE:
+            flush_sku_table()
+            cells = [str(c) for c in pr.cells]
+            if should_flush_wide_block(wide_buf, cells):
+                flush_wide_block()
+            wide_buf.append(cells)
+            continue
+
+        flush_sku_table()
+        flush_wide_block()
+
+        if pr.kind == RowKind.TITLE:
+            story.append(_p(pr.cells[0], title_style))
+        elif pr.kind == RowKind.SECTION:
+            story.append(_p(pr.cells[0], section_style))
+        elif pr.kind == RowKind.SUBHEAD:
+            story.append(_p(pr.cells[0], subhead_style))
+        elif pr.kind == RowKind.INDEX:
+            if len(pr.cells) >= 2:
+                data = [pr.cells[i : i + 2] for i in range(0, len(pr.cells), 2)]
+                for pair in data:
+                    while len(pair) < 2:
+                        pair.append("")
+                t = Table(data, colWidths=[3.25 * inch, 3.25 * inch])
+                t.setStyle(
+                    TableStyle(
+                        [
+                            ("FONTSIZE", (0, 0), (-1, -1), 9),
+                            ("TEXTCOLOR", (0, 0), (-1, -1), FAF_TEXT),
+                            ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+                        ]
+                    )
+                )
+                story.append(t)
+            elif pr.cells:
+                story.append(_p(" · ".join(pr.cells), body))
+        elif pr.kind == RowKind.PROSE:
+            para = _prose_paragraph(pr.cells, body)
+            if para is not None:
+                story.append(para)
+                story.append(Spacer(1, 4))
+
+    flush_sku_table()
+    flush_wide_block()
+
+    doc.build(story)
     return page_count_box["n"]

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import zipfile
 from pathlib import Path
 from typing import Any
 
@@ -21,13 +22,29 @@ ADDRESS_RE = re.compile(
 )
 TERMS_RE = re.compile(r"terms\s*:|net\s*30|finance charge", re.I)
 INTERNET_POLICY_RE = re.compile(r"internet policy|mininum pricing|minimum pricing", re.I)
-CAT_LABELS = frozenset({"Unf", "Cat. 1", "Cat. 2", "Cat. 3"})
+FINISHED_CAT_LABELS = frozenset({"Cat. 1", "Cat. 2", "Cat. 3"})
+
+
+def _resolve_workbook(path: Path) -> Path | None:
+    if path.suffix.lower() in (".xlsx", ".xlsm") and path.is_file():
+        return path
+    if path.suffix.lower() == ".zip" and path.is_file():
+        base = path.parent / f"{path.stem}_fn_extract"
+        base.mkdir(exist_ok=True)
+        with zipfile.ZipFile(path, "r") as zf:
+            zf.extractall(base)
+        for p in base.rglob("*.xlsm"):
+            return p
+        for p in base.rglob("*.xlsx"):
+            return p
+    return None
 
 
 def is_fn_chairs_workbook(path: Path) -> bool:
-    if path.suffix.lower() not in (".xlsx", ".xlsm"):
+    xlsx = _resolve_workbook(path)
+    if not xlsx:
         return False
-    wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
+    wb = openpyxl.load_workbook(xlsx, read_only=True, data_only=True)
     names = wb.sheetnames
     wb.close()
     return "PL Print" in names and "Cover Page" in names
@@ -64,7 +81,7 @@ def _is_wood_header_row(row: list) -> bool:
 
 
 def _is_pl_data_row(row: list) -> bool:
-    return _cell_str(row[1]) in CAT_LABELS
+    return _cell_str(row[1]) in FINISHED_CAT_LABELS
 
 
 def _transform_pl_row(row: list, multiplier: float, width: int) -> list[str]:
@@ -150,19 +167,27 @@ def _process_internet_warranty_only(rows: list[list], multiplier: float) -> list
 def _process_pl_print(rows: list[list], multiplier: float) -> list[ProcessedRow]:
     out: list[ProcessedRow] = []
     width = 23
+    current_product = ""
     for row in rows:
         if row_is_blank(row):
             out.append(ProcessedRow(RowKind.BLANK, []))
             continue
         if _is_wood_header_row(row):
+            current_product = ""
             style = sanitize_retail_text(_cell_str(row[0]), multiplier)
             out.append(ProcessedRow(RowKind.SUBHEAD, [style]))
             cells = _transform_pl_row(row, multiplier, width)
             if any(cells[2:]):
                 out.append(ProcessedRow(RowKind.WIDE, cells))
             continue
+        if _cell_str(row[0]) and not _is_pl_data_row(row):
+            current_product = _cell_str(row[0])
+        if _cell_str(row[1]) == "Unf":
+            continue
         if _is_pl_data_row(row) or _cell_str(row[0]):
             cells = _transform_pl_row(row, multiplier, width)
+            if _is_pl_data_row(row) and current_product and not cells[0].strip():
+                cells[0] = current_product
             if any(cells):
                 out.append(ProcessedRow(RowKind.WIDE, cells))
     return out
@@ -174,7 +199,10 @@ def process_fn_chairs_workbook(
     builder_name: str,
     multiplier: float,
 ) -> list[ProcessedRow]:
-    wb = openpyxl.load_workbook(path, data_only=True, read_only=True)
+    xlsx = _resolve_workbook(path)
+    if not xlsx:
+        raise FileNotFoundError(f"FN Chairs workbook not found in {path}")
+    wb = openpyxl.load_workbook(xlsx, data_only=True, read_only=True)
     processed: list[ProcessedRow] = []
 
     for name in wb.sheetnames:
