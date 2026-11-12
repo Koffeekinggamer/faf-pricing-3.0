@@ -5,7 +5,9 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from scripts.dealer_terms import is_dealer_terms_text
 from scripts.finished_only import UNFINISHED_NOTE_RE, drop_unfinished_note_text
+from scripts.pdf_plain_text import clean_pdf_plain_text
 from scripts.pricing_lib import assert_no_approx, retail_whole_dollar, transform_text_prices
 
 WHOLESALE_RE = re.compile(r"\bwholesale\b", re.I)
@@ -43,6 +45,9 @@ def retail_price_cell(value: Any, multiplier: float) -> str:
 
 def sanitize_retail_text(text: str, multiplier: float, *, allow_percent: bool = True) -> str:
     if not text or not isinstance(text, str):
+        return ""
+    text = clean_pdf_plain_text(text)
+    if is_dealer_terms_text(text):
         return ""
     if UNFINISHED_NOTE_RE.search(text):
         return ""

@@ -12,6 +12,7 @@ import xlrd
 
 from scripts.dealer_book import ProcessedRow, RowKind, collapse_blank_rows, row_is_blank
 from scripts.pricing_lib import retail_whole_dollar
+from scripts.dealer_terms import is_dealer_terms_text
 from scripts.retail_text import forbidden_phrases, retail_price_cell, sanitize_retail_text
 
 DOC_TITLE = "Forks Valley Woodworking Retail Price List · 2026"
@@ -23,7 +24,9 @@ SEARCH_SKIP_RE = re.compile(
 DEALER_INFO_RE = re.compile(
     r"middlebury|terms\s*:|net\s*\d|discount|std\s*terms|"
     r"\d{3}[\s\-]?\d{3}[\s\-]?\d{4}|@forksvalley|"
-    r"offer\s+unfinished\s+and\s+finished\s+prices|between\s+unfinished",
+    r"offer\s+unfinished\s+and\s+finished\s+prices|between\s+unfinished|"
+    r"purchase\s+order|order\s+confirmation|invoic|by\s+fax|"
+    r"payment\s+terms|table\s+of\s+contents|three\s+weeks\s+after",
     re.I,
 )
 ID_ROW_RE = re.compile(r"^ID\s*NO\.?$", re.I)
@@ -126,12 +129,33 @@ def _process_information(rows: list[list], multiplier: float) -> list[ProcessedR
     out: list[ProcessedRow] = []
     out.append(ProcessedRow(RowKind.TITLE, [DOC_TITLE]))
     out.append(ProcessedRow(RowKind.SECTION, ["Information"]))
+    skip_replacement_parts = False
+    skip_order_changes = False
     for row in rows:
         if row_is_blank(row):
             out.append(ProcessedRow(RowKind.BLANK, []))
             continue
         joined = " ".join(_cell_str(c) for c in row)
-        if DEALER_INFO_RE.search(joined):
+        if re.match(r"^\s*replacement\s+parts\s*$", joined, re.I):
+            skip_replacement_parts = True
+            continue
+        if skip_replacement_parts:
+            if row_is_blank(row):
+                skip_replacement_parts = False
+            continue
+        if re.match(r"^\s*order\s+changes\s*$", joined, re.I):
+            skip_order_changes = True
+            continue
+        if skip_order_changes:
+            if row_is_blank(row):
+                skip_order_changes = False
+            elif is_dealer_terms_text(joined) or "purchase" in joined.lower():
+                continue
+            else:
+                skip_order_changes = False
+        if "purchase" in joined.lower() and "order" in joined.lower():
+            continue
+        if DEALER_INFO_RE.search(joined) or is_dealer_terms_text(joined):
             continue
         if "wholesale" in joined.lower():
             continue
@@ -140,7 +164,7 @@ def _process_information(rows: list[list], multiplier: float) -> list[ProcessedR
             if c is None or isinstance(c, (int, float)):
                 continue
             t = sanitize_retail_text(_cell_str(c), multiplier)
-            if t:
+            if t and not is_dealer_terms_text(t):
                 cells.append(t)
         if cells:
             out.append(ProcessedRow(RowKind.PROSE, cells))
@@ -187,9 +211,15 @@ def _process_finished_wholesale(rows: list[list], multiplier: float) -> list[Pro
                 out.append(ProcessedRow(RowKind.SUBHEAD, [sanitize_retail_text(c0, multiplier)]))
                 continue
         if "%" in joined and not c0.startswith("FV"):
-            note = sanitize_retail_text(joined.replace("markup", ""), multiplier)
-            if note:
-                out.append(ProcessedRow(RowKind.PROSE, [note]))
+            note_cells: list[str] = []
+            for c in row:
+                if isinstance(c, (int, float)):
+                    continue
+                t = sanitize_retail_text(_cell_str(c).replace("markup", ""), multiplier)
+                if t and not is_dealer_terms_text(t):
+                    note_cells.append(t)
+            if note_cells:
+                out.append(ProcessedRow(RowKind.PROSE, note_cells))
             continue
         if c0.startswith("FV") or (c0 and row[1]):
             trimmed = row[: width + 1]

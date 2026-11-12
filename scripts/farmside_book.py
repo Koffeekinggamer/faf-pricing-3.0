@@ -103,17 +103,15 @@ def _process_title_page(rows: list[list], multiplier: float) -> list[ProcessedRo
             continue
         if "table of contents" in joined.lower():
             in_toc = True
-            out.append(ProcessedRow(RowKind.SECTION, ["Table of Contents"]))
+            continue
+        if in_toc:
+            if row_is_blank(row):
+                in_toc = False
             continue
         if WHOLESALE_PRICELIST_RE.search(joined):
             if not title_done:
                 out.append(ProcessedRow(RowKind.TITLE, [DOC_TITLE]))
                 title_done = True
-            continue
-        if in_toc and _cell_str(row[0]):
-            name = sanitize_retail_text(_cell_str(row[0]), multiplier)
-            if name:
-                out.append(ProcessedRow(RowKind.PROSE, [name]))
             continue
         if "all prices subject" in joined.lower():
             continue
