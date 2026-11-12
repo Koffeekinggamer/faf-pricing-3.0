@@ -112,6 +112,8 @@ def _transform_wide_cells(
                 out.append("")
             continue
         t = _sanitize_text(_cell_str(c), multiplier)
+        if t.lower() == "unfinished":
+            t = ""
         if t.upper() == "ADD":
             out.append("ADD")
         elif t:
@@ -166,6 +168,13 @@ def process_artisan_book(
             continue
 
         if EFFECTIVE_RE.search(joined):
+            continue
+
+        labels = {_cell_str(c).lower() for c in row if _cell_str(c)}
+        if labels == {"unfinished", "finished"}:
+            out.append(ProcessedRow(RowKind.SUBHEAD, ["Finished"]))
+            continue
+        if labels == {"unfinished"}:
             continue
 
         if "finished and unfinished" in joined.lower():
