@@ -37,7 +37,9 @@ python3 -m http.server 8080
      --note "Optional note for staff"
    ```
 
-3. Commit the updated `data/builders.json` and `sheets/<slug>.pdf`, push to `main`, and wait for the Pages workflow.
+   On **first add**, pass `--multiplier` (saved in `data/multipliers.json`, not used by the public index). On **refresh**, omit `--multiplier` to reuse the saved value. To change a builder’s multiplier later, pass the new value with `--override-multiplier`.
+
+3. Commit the updated `data/builders.json`, `data/multipliers.json` (when the multiplier changes), and `sheets/<slug>.pdf`, push to `main`, and wait for the Pages workflow.
 
 ### Pricing rules
 
@@ -54,7 +56,8 @@ Re-adding the same builder name **replaces** the PDF and updates metadata (no du
 | Path | Purpose |
 |------|---------|
 | `index.html` | Staff price sheet index |
-| `data/builders.json` | Builder list (starts empty in production) |
+| `data/builders.json` | Builder list (public index) |
+| `data/multipliers.json` | Staff-only retail multipliers per builder (not read by the site) |
 | `sheets/` | Retail PDFs |
 | `assets/` | FAF logo, CSS, JS |
 | `scripts/add_sheet.py` | CLI entrypoint |
