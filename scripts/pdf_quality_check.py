@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pdfplumber
 
-from scripts.dealer_terms import find_forbidden_dealer_phrases
+from scripts.dealer_terms import find_customer_forbidden_in_text, find_forbidden_dealer_phrases
 
 # Literal markup / entity artifacts in extracted text.
 MARKUP_ARTIFACT_RE = re.compile(
@@ -66,12 +66,26 @@ def find_dealer_terms_in_pdf(pdf_path: Path) -> list[str]:
     return issues
 
 
+def find_customer_contact_in_pdf(pdf_path: Path) -> list[str]:
+    issues: list[str] = []
+    with pdfplumber.open(pdf_path) as pdf:
+        text = "".join((p.extract_text() or "") + "\n" for p in pdf.pages)
+        seen: set[str] = set()
+        for hit in find_customer_forbidden_in_text(text):
+            if hit in seen:
+                continue
+            seen.add(hit)
+            issues.append(f"{pdf_path.name}: customer PDF must not contain ({hit})")
+    return issues
+
+
 def assert_pdfs_quality(paths: list[Path]) -> None:
     all_issues: list[str] = []
     for p in paths:
         all_issues.extend(find_pdf_markup_artifacts(p))
         all_issues.extend(find_text_past_right_margin(p))
         all_issues.extend(find_dealer_terms_in_pdf(p))
+        all_issues.extend(find_customer_contact_in_pdf(p))
     if all_issues:
         sample = "\n".join(all_issues[:50])
         extra = (

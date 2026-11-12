@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any
 
+from scripts.dealer_terms import is_dealer_terms_text
 from scripts.pricing_lib import (
     assert_no_approx,
     retail_whole_dollar,
@@ -59,6 +60,8 @@ def row_is_blank(row: list) -> bool:
 def _sanitize_text(text: str, multiplier: float) -> str:
     if not text:
         return text
+    if is_dealer_terms_text(text):
+        return ""
     if FOB_RE.search(text):
         return ""
     t = PREFERRED_RE.sub("", text)

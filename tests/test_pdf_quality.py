@@ -4,6 +4,7 @@ import pytest
 
 from scripts.pdf_quality_check import (
     assert_pdfs_quality,
+    find_customer_contact_in_pdf,
     find_dealer_terms_in_pdf,
     find_pdf_markup_artifacts,
     find_text_past_right_margin,
@@ -42,4 +43,11 @@ def test_no_dealer_terms(pdf_paths: list[Path]) -> None:
     bad: list[str] = []
     for p in pdf_paths:
         bad.extend(find_dealer_terms_in_pdf(p))
+    assert not bad, "\n".join(bad)
+
+
+def test_no_builder_contact_or_billing(pdf_paths: list[Path]) -> None:
+    bad: list[str] = []
+    for p in pdf_paths:
+        bad.extend(find_customer_contact_in_pdf(p))
     assert not bad, "\n".join(bad)
