@@ -256,7 +256,11 @@ def _process_workbook(
                 continue
             if FORMULA_RE.search(_joined(row)):
                 continue
-            if DEALER_RE.search(_joined(row)) and "deduct" not in _joined(row).lower():
+            if DEALER_RE.search(_joined(row)):
+                continue
+            if "deduct" in _joined(row).lower() and "unfinished" in _joined(row).lower():
+                continue
+            if re.search(r"unfinished\s+price", _joined(row), re.I):
                 continue
             cells = _transform_row(row, multiplier)
             if not cells:

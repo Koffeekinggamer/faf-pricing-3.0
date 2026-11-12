@@ -21,8 +21,12 @@ def drop_unfinished_note_text(text: str) -> str:
         return ""
     if UNFINISHED_NOTE_RE.search(text):
         return ""
+    if re.search(r"deduct\s+\d+\s*%.*unfinished|unfinished\s+price", text, re.I):
+        return ""
     t = re.sub(r"\s*•\s*finished\s+and\s+unfinished\s*•\s*", " ", text, flags=re.I)
     t = re.sub(r"\bfinished\s+and\s+unfinished\b", "Finished", t, flags=re.I)
+    t = re.sub(r"\bunfinished\b", "", t, flags=re.I)
+    t = re.sub(r"\s{2,}", " ", t).strip(" ,;•")
     return t.strip()
 
 

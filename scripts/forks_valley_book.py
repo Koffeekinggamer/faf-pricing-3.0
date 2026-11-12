@@ -22,7 +22,8 @@ SEARCH_SKIP_RE = re.compile(
 )
 DEALER_INFO_RE = re.compile(
     r"middlebury|terms\s*:|net\s*\d|discount|std\s*terms|"
-    r"\d{3}[\s\-]?\d{3}[\s\-]?\d{4}|@forksvalley",
+    r"\d{3}[\s\-]?\d{3}[\s\-]?\d{4}|@forksvalley|"
+    r"offer\s+unfinished\s+and\s+finished\s+prices|between\s+unfinished",
     re.I,
 )
 ID_ROW_RE = re.compile(r"^ID\s*NO\.?$", re.I)
