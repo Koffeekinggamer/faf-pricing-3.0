@@ -1,7 +1,92 @@
 [
   {
+    "name": "200 Woodcraft",
+    "pdf": "sheets/200_Woodcraft.pdf",
+    "updated": "2026-11-12"
+  },
+  {
+    "name": "A&L Furniture (OH)",
+    "pdf": "sheets/A_L_Furniture_OH.pdf",
+    "updated": "2026-11-12"
+  },
+  {
+    "name": "A&L Furniture Co. (PA)",
+    "pdf": "sheets/A_L_Furniture_Co_PA.pdf",
+    "updated": "2026-11-12"
+  },
+  {
+    "name": "AAA Furniture",
+    "pdf": "sheets/AAA_Furniture.pdf",
+    "updated": "2026-11-12"
+  },
+  {
+    "name": "AJ's Furniture",
+    "pdf": "sheets/AJ_s_Furniture.pdf",
+    "updated": "2026-11-12"
+  },
+  {
+    "name": "Amish Aspen and Rustic",
+    "pdf": "sheets/Amish_Aspen_and_Rustic.pdf",
+    "updated": "2026-11-12"
+  },
+  {
+    "name": "Arista Wood",
+    "pdf": "sheets/Arista_Wood.pdf",
+    "updated": "2026-11-12"
+  },
+  {
+    "name": "Armani Woodshop",
+    "pdf": "sheets/Armani_Woodshop.pdf",
+    "updated": "2026-11-12"
+  },
+  {
     "name": "Artisan Chairs",
     "pdf": "sheets/Artisan_Chairs.pdf",
+    "updated": "2026-11-12"
+  },
+  {
+    "name": "Ashery Oak",
+    "pdf": "sheets/Ashery_Oak.pdf",
+    "updated": "2026-11-12"
+  },
+  {
+    "name": "Bamm's Woodcraft",
+    "pdf": "sheets/Bamm_s_Woodcraft.pdf",
+    "updated": "2026-11-12"
+  },
+  {
+    "name": "Barkman Furniture",
+    "pdf": "sheets/Barkman_Furniture.pdf",
+    "updated": "2026-11-12"
+  },
+  {
+    "name": "Berlin Woodworking",
+    "pdf": "sheets/Berlin_Woodworking.pdf",
+    "updated": "2026-11-12"
+  },
+  {
+    "name": "Black Horse Furniture",
+    "pdf": "sheets/Black_Horse_Furniture.pdf",
+    "updated": "2026-11-12"
+  },
+  {
+    "name": "Blu Furniture",
+    "pdf": "sheets/Blu_Furniture.pdf",
+    "updated": "2026-11-12"
+  },
+  {
+    "name": "Bluestone Poly",
+    "pdf": "sheets/Bluestone_Poly.pdf",
+    "updated": "2026-11-12"
+  },
+  {
+    "name": "Brookside Home Furnishings",
+    "pdf": "sheets/Brookside_Home_Furnishings.pdf",
+    "updated": "2026-11-12"
+  },
+  {
+    "name": "Buckeye Furniture",
+    "pdf": "sheets/Buckeye_Furniture.pdf",
     "updated": "2026-11-12"
   },
   {
@@ -27,6 +112,11 @@
   {
     "name": "J. Troyer and Co",
     "pdf": "sheets/J_Troyer_and_Co.pdf",
+    "updated": "2026-11-12"
+  },
+  {
+    "name": "JF Hardwood Designs",
+    "pdf": "sheets/JF_Hardwood_Designs.pdf",
     "updated": "2026-11-12"
   },
   {
