@@ -1,0 +1,484 @@
+/* Foothills Amish Furniture — Pricing 3.0 (from foothillsamishfurniture.com theme tokens) */
+:root {
+  --faf-bg: #ffffff;
+  --faf-bg-accent: #e4ddd2;
+  --faf-cream: #f4efe4;
+  --faf-ink: #1d2726;
+  --faf-body: #454c4b;
+  --faf-muted: #7d8281;
+  --faf-moss: #454c4b;
+  --faf-moss-dk: #1b2927;
+  --faf-line: #e4ddd2;
+  --faf-accent: #9a5b3c;
+  --font-display: "Ovo", Georgia, serif;
+  --font-sans: "Roboto", Helvetica, Arial, sans-serif;
+  --header-h: 72px;
+  --wrap: 1120px;
+  --gutter: 24px;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  background: var(--faf-bg-accent);
+}
+
+body {
+  margin: 0;
+  font-family: var(--font-sans);
+  font-size: 16px;
+  font-weight: 400;
+  line-height: 1.65;
+  color: var(--faf-body);
+  -webkit-font-smoothing: antialiased;
+}
+
+.faf-header {
+  position: sticky;
+  top: 0;
+  z-index: 50;
+  background: var(--faf-moss);
+  border-bottom: 1px solid var(--faf-moss-dk);
+  height: var(--header-h);
+  display: flex;
+  align-items: center;
+  padding: 0 var(--gutter);
+}
+
+.faf-header__in {
+  width: 100%;
+  max-width: var(--wrap);
+  margin: 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.faf-header__logo {
+  display: block;
+  height: 38px;
+  width: auto;
+}
+
+.faf-header__tag {
+  margin-left: auto;
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--faf-cream);
+  opacity: 0.85;
+}
+
+.faf-hero {
+  background: var(--faf-cream);
+  padding: 40px var(--gutter) 16px;
+}
+
+.faf-hero__in {
+  max-width: var(--wrap);
+  margin: 0 auto;
+}
+
+.faf-eyebrow {
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--faf-muted);
+}
+
+.faf-hero h1 {
+  font-family: var(--font-display);
+  font-size: clamp(2rem, 4vw, 2.75rem);
+  font-weight: 400;
+  line-height: 1.1;
+  color: var(--faf-moss);
+  margin: 8px 0 12px;
+}
+
+.faf-lede {
+  max-width: 40rem;
+  font-size: 1.05rem;
+  color: var(--faf-body);
+}
+
+.faf-tool {
+  background: var(--faf-cream);
+  padding: 0 var(--gutter) 64px;
+}
+
+.faf-tool__in {
+  max-width: var(--wrap);
+  margin: 0 auto;
+}
+
+.faf-footer {
+  background: var(--faf-moss-dk);
+  color: rgba(244, 239, 228, 0.7);
+  font-size: 13px;
+  padding: 28px var(--gutter);
+  text-align: center;
+}
+
+/* Price sheet list (adapted layout; FAF colors) */
+.ps {
+  --ps-ink: var(--faf-ink);
+  --ps-body: var(--faf-body);
+  --ps-muted: var(--faf-muted);
+  --ps-line: var(--faf-line);
+  --ps-moss: var(--faf-moss);
+  --ps-bg: var(--faf-cream);
+  --ps-sand: var(--faf-bg-accent);
+  --ps-accent: var(--faf-accent);
+  --ps-top: var(--header-h);
+  font-family: var(--font-sans);
+  color: var(--ps-body);
+  width: 100%;
+}
+
+.ps-bar {
+  position: sticky;
+  top: var(--ps-top, 0);
+  z-index: 20;
+  background: var(--ps-bg);
+  padding: 16px 0 12px;
+  border-bottom: 1px solid var(--ps-line);
+  display: grid;
+  gap: 12px;
+}
+
+.ps-bar.is-stuck {
+  box-shadow: 0 -48px 0 0 var(--ps-bg);
+}
+
+.ps-search {
+  position: relative;
+  display: flex;
+  align-items: center;
+  background: #fff;
+  border: 1.5px solid var(--ps-line);
+  border-radius: 10px;
+  padding: 0 14px;
+  transition: border-color 0.15s;
+}
+
+.ps-search:focus-within {
+  border-color: var(--ps-moss);
+  box-shadow: 0 0 0 3px rgba(69, 76, 75, 0.12);
+}
+
+.ps-search svg {
+  color: var(--ps-muted);
+  flex: none;
+}
+
+.ps-search input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  font: inherit;
+  font-size: 20px;
+  color: var(--ps-ink);
+  padding: 14px 12px;
+  -webkit-appearance: none;
+}
+
+.ps-kbd {
+  font: 12px/1 ui-monospace, monospace;
+  border: 1px solid var(--ps-line);
+  border-radius: 4px;
+  padding: 3px 6px;
+  color: var(--ps-muted);
+}
+
+.ps-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.ps-chip {
+  font: inherit;
+  font-size: 14px;
+  border: 1px solid var(--ps-line);
+  background: #fff;
+  color: var(--ps-body);
+  border-radius: 999px;
+  padding: 7px 14px;
+  cursor: pointer;
+  line-height: 1.2;
+}
+
+.ps-chip:hover {
+  border-color: var(--ps-moss);
+}
+
+.ps-chip[aria-pressed="true"] {
+  background: var(--ps-moss);
+  border-color: var(--ps-moss);
+  color: #fff;
+}
+
+.ps-count {
+  margin-left: auto;
+  font-size: 14px;
+  color: var(--ps-muted);
+}
+
+.ps-az {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+}
+
+.ps-az a,
+.ps-az span {
+  display: inline-grid;
+  place-items: center;
+  min-width: 30px;
+  height: 30px;
+  font-size: 14px;
+  font-weight: 600;
+  border-radius: 6px;
+  text-decoration: none;
+}
+
+.ps-az a {
+  color: var(--ps-moss);
+}
+
+.ps-az a:hover,
+.ps-az a:focus-visible {
+  background: var(--ps-sand);
+}
+
+.ps-az a.is-off {
+  color: var(--ps-line);
+  pointer-events: none;
+}
+
+.ps-az span {
+  color: var(--ps-line);
+}
+
+.ps-groups {
+  padding-top: 8px;
+}
+
+.ps-h {
+  font-family: var(--font-display);
+  font-size: 28px;
+  line-height: 1;
+  color: var(--ps-moss);
+  margin: 28px 0 10px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--ps-line);
+  font-weight: 400;
+}
+
+.ps-group {
+  scroll-margin-top: calc(var(--ps-top, 0) + var(--ps-bar-h, 200px));
+}
+
+.ps-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+  gap: 8px;
+}
+
+.ps-item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: #fff;
+  border: 1px solid var(--ps-line);
+  border-radius: 10px;
+  padding: 10px 10px 10px 6px;
+  min-height: 64px;
+  transition: border-color 0.12s, box-shadow 0.12s;
+}
+
+.ps-item:hover {
+  border-color: var(--ps-moss);
+  box-shadow: 0 2px 10px rgba(30, 28, 25, 0.06);
+}
+
+.ps-item.is-first {
+  border-color: var(--ps-moss);
+  box-shadow: 0 0 0 2px rgba(69, 76, 75, 0.18);
+}
+
+.ps-pin {
+  position: relative;
+  z-index: 1;
+  flex: none;
+  width: 36px;
+  height: 36px;
+  border: 0;
+  background: transparent;
+  color: var(--ps-line);
+  font-size: 20px;
+  cursor: pointer;
+  border-radius: 8px;
+  line-height: 1;
+}
+
+.ps-pin:hover {
+  color: var(--ps-muted);
+  background: var(--ps-sand);
+}
+
+.ps-pin[aria-pressed="true"] {
+  color: var(--ps-accent);
+}
+
+.ps-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.ps-name {
+  display: block;
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--ps-ink);
+  text-decoration: none;
+  line-height: 1.3;
+}
+
+.ps-name:hover {
+  color: var(--ps-moss);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.ps-name::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+}
+
+.ps-actions {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  gap: 6px;
+  flex: none;
+}
+
+.ps-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  margin-top: 3px;
+  font-size: 13px;
+  color: var(--ps-muted);
+}
+
+.ps-date.is-new {
+  color: var(--ps-moss);
+  font-weight: 600;
+}
+
+.ps-date.is-new::before {
+  content: "New ";
+  background: var(--ps-moss);
+  color: #fff;
+  border-radius: 4px;
+  padding: 1px 6px;
+  margin-right: 6px;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.ps-note {
+  background: var(--ps-sand);
+  border-radius: 4px;
+  padding: 1px 6px;
+  color: var(--ps-body);
+}
+
+.ps-btn {
+  display: inline-flex;
+  align-items: center;
+  font-size: 14px;
+  font-weight: 600;
+  text-decoration: none;
+  border-radius: 8px;
+  padding: 8px 14px;
+  background: var(--ps-moss);
+  color: #fff;
+  white-space: nowrap;
+}
+
+.ps-btn:hover {
+  background: var(--faf-moss-dk);
+  color: #fff;
+}
+
+.ps-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+.ps-empty,
+.ps-zero {
+  padding: 32px 0;
+  font-size: 18px;
+  color: var(--ps-muted);
+}
+
+.ps [hidden] {
+  display: none !important;
+}
+
+@media (max-width: 640px) {
+  .ps-list {
+    grid-template-columns: 1fr;
+  }
+
+  .ps-search input {
+    font-size: 18px;
+    padding: 12px 8px;
+  }
+
+  .ps-kbd {
+    display: none;
+  }
+
+  .ps-az a,
+  .ps-az span {
+    min-width: 24px;
+    height: 28px;
+    font-size: 13px;
+  }
+
+  .ps-count {
+    width: 100%;
+    margin-left: 0;
+  }
+
+  .ps-btn {
+    padding: 8px 12px;
+  }
+
+  .faf-header__tag {
+    display: none;
+  }
+}

@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex, nofollow" />
+    <title>Foothills Amish Furniture · Pricing 3.0</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Ovo&family=Roboto:wght@400;500;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="assets/site.css" />
+  </head>
+  <body>
+    <header class="faf-header">
+      <div class="faf-header__in">
+        <a href="https://foothillsamishfurniture.com/" rel="noopener noreferrer">
+          <img
+            class="faf-header__logo"
+            src="assets/faf-logo.png"
+            width="500"
+            height="170"
+            alt="Foothills Amish Furniture"
+          />
+        </a>
+        <span class="faf-header__tag">Landrum, SC</span>
+      </div>
+    </header>
+
+    <main>
+      <section class="faf-hero">
+        <div class="faf-hero__in">
+          <p class="faf-eyebrow">For our sales team · Internal</p>
+          <h1>Builder price sheets</h1>
+          <p class="faf-lede">
+            Start typing a builder&rsquo;s name. Press <kbd>/</kbd> to focus search,
+            <kbd>Enter</kbd> to open the first match, or tap the star to pin the
+            builders you quote most.
+          </p>
+        </div>
+      </section>
+
+      <section class="faf-tool">
+        <div class="faf-tool__in">
+          <div class="ps" id="ps" data-count="0">
+            <div class="ps-bar" id="ps-bar">
+              <div class="ps-search">
+                <svg aria-hidden="true" viewBox="0 0 24 24" width="20" height="20">
+                  <circle
+                    cx="11"
+                    cy="11"
+                    r="7"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                  />
+                  <path
+                    d="M20 20l-3.5-3.5"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                  />
+                </svg>
+                <input
+                  id="ps-q"
+                  type="search"
+                  autocomplete="off"
+                  spellcheck="false"
+                  placeholder="Type a builder name&hellip;"
+                  aria-label="Find a builder"
+                />
+                <kbd class="ps-kbd" aria-hidden="true">/</kbd>
+              </div>
+              <div class="ps-filters" role="group" aria-label="Filters">
+                <button
+                  type="button"
+                  class="ps-chip"
+                  data-f="pinned"
+                  aria-pressed="false"
+                >
+                  ★ Pinned
+                </button>
+                <button
+                  type="button"
+                  class="ps-chip"
+                  data-f="recent"
+                  aria-pressed="false"
+                >
+                  Updated last 60 days
+                </button>
+                <span class="ps-count" id="ps-count" aria-live="polite"
+                  >0 builders</span
+                >
+              </div>
+              <nav class="ps-az" id="ps-az" aria-label="Jump to letter"></nav>
+            </div>
+
+            <section
+              class="ps-pinned"
+              id="ps-pinned"
+              hidden
+              aria-label="Pinned builders"
+            >
+              <h2 class="ps-h">Pinned</h2>
+              <ul class="ps-list" id="ps-pinned-list"></ul>
+            </section>
+
+            <div class="ps-groups" id="ps-groups"></div>
+
+            <p class="ps-zero" id="ps-zero" hidden>
+              No builder sheets yet. Run <code>scripts/add_sheet.py</code> to add
+              the first one.
+            </p>
+            <p class="ps-empty" id="ps-empty" hidden>
+              No builder matches that. Try fewer letters.
+            </p>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="faf-footer">
+      Foothills Amish Furniture · Pricing 3.0 · Staff only
+    </footer>
+
+    <script src="assets/app.js" defer></script>
+  </body>
+</html>
