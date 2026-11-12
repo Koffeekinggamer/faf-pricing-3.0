@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from scripts.finished_only import drop_unfinished_note_text
 from scripts.dealer_book import (
     FOB_RE,
     PREFERRED_RE,
@@ -73,18 +74,24 @@ def _is_add_row(row: list) -> bool:
     return any(_cell_str(c).upper() == "ADD" for c in row)
 
 
-def _is_price_product_row(row: list) -> bool:
-    if not _cell_str(row[0] if row else ""):
-        return False
-    nums = [
-        c
+def _finished_price_indices(row: list) -> list[int]:
+    indices = [
+        j
         for j, c in enumerate(row)
         if j >= 3
         and isinstance(c, (int, float))
         and not isinstance(c, bool)
-        and c >= 15
+        and float(c) >= 15
     ]
-    return len(nums) >= 2
+    if len(indices) >= 16:
+        return indices[8:]
+    return indices
+
+
+def _is_price_product_row(row: list) -> bool:
+    if not _cell_str(row[0] if row else ""):
+        return False
+    return len(_finished_price_indices(row)) >= 2
 
 
 def _transform_wide_cells(
@@ -99,7 +106,7 @@ def _transform_wide_cells(
         if isinstance(c, (int, float)) and not isinstance(c, bool):
             if is_add and j == 14:
                 out.append(_format_retail_price(c, multiplier))
-            elif is_price and j >= 3:
+            elif is_price and j in _finished_price_indices(row):
                 out.append(_format_retail_price(c, multiplier))
             else:
                 out.append("")
@@ -162,8 +169,6 @@ def process_artisan_book(
             continue
 
         if "finished and unfinished" in joined.lower():
-            text = _sanitize_text(joined, multiplier)
-            out.append(ProcessedRow(RowKind.SUBHEAD, [text]))
             continue
 
         if _is_add_row(row):
@@ -207,15 +212,7 @@ def process_artisan_book(
                 out.append(ProcessedRow(RowKind.WIDE, cells))
             continue
 
-        if "unfinished" in joined.lower():
-            out.append(
-                ProcessedRow(
-                    RowKind.WIDE,
-                    _transform_wide_cells(
-                        row, multiplier, is_add=False, is_price=False, width=width
-                    ),
-                )
-            )
+        if "unfinished" in joined.lower() and drop_unfinished_note_text(joined) == "":
             continue
 
         cells = []

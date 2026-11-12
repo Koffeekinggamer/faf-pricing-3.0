@@ -53,6 +53,26 @@ from scripts.red_barn_book import (
     process_red_barn_workbook,
     red_barn_forbidden_text,
 )
+from scripts.troyer_book import (
+    is_j_troyer_bundle,
+    j_troyer_forbidden_text,
+    process_j_troyer_bundle,
+)
+from scripts.frog_pond_book import (
+    frog_pond_forbidden_text,
+    is_frog_pond_workbook,
+    process_frog_pond_workbook,
+)
+from scripts.townline_book import (
+    is_townline_workbook,
+    process_townline_workbook,
+    townline_forbidden_text,
+)
+from scripts.woodside_book import (
+    is_woodside_workbook,
+    process_woodside_workbook,
+    woodside_forbidden_text,
+)
 from scripts.pdf_builder import build_retail_pdf, build_retail_pdf_processed
 from scripts.pricing_lib import assert_no_approx
 from scripts.read_dealer_file import (
@@ -129,6 +149,74 @@ def main() -> int:
         pages = build_retail_pdf_processed(
             processed,
             builder_name=args.builder,
+            updated=updated,
+            output_path=pdf_path,
+        )
+        print(f"Wrote {pages}-page retail PDF", file=sys.stderr)
+    elif is_j_troyer_bundle(source):
+        processed = process_j_troyer_bundle(source, multiplier=args.multiplier)
+        bad = j_troyer_forbidden_text(processed)
+        if bad:
+            print(
+                "Retail PDF would contain dealer-only wording: "
+                + "; ".join(bad[:3]),
+                file=sys.stderr,
+            )
+            return 1
+        pages = build_retail_pdf_processed(
+            processed,
+            builder_name=builder_name,
+            updated=updated,
+            output_path=pdf_path,
+        )
+        print(f"Wrote {pages}-page retail PDF", file=sys.stderr)
+    elif is_frog_pond_workbook(source):
+        processed = process_frog_pond_workbook(source, multiplier=args.multiplier)
+        bad = frog_pond_forbidden_text(processed)
+        if bad:
+            print(
+                "Retail PDF would contain dealer-only wording: "
+                + "; ".join(bad[:3]),
+                file=sys.stderr,
+            )
+            return 1
+        pages = build_retail_pdf_processed(
+            processed,
+            builder_name=builder_name,
+            updated=updated,
+            output_path=pdf_path,
+        )
+        print(f"Wrote {pages}-page retail PDF", file=sys.stderr)
+    elif is_woodside_workbook(source):
+        processed = process_woodside_workbook(source, multiplier=args.multiplier)
+        bad = woodside_forbidden_text(processed)
+        if bad:
+            print(
+                "Retail PDF would contain dealer-only wording: "
+                + "; ".join(bad[:3]),
+                file=sys.stderr,
+            )
+            return 1
+        pages = build_retail_pdf_processed(
+            processed,
+            builder_name=builder_name,
+            updated=updated,
+            output_path=pdf_path,
+        )
+        print(f"Wrote {pages}-page retail PDF", file=sys.stderr)
+    elif is_townline_workbook(source):
+        processed = process_townline_workbook(source, multiplier=args.multiplier)
+        bad = townline_forbidden_text(processed)
+        if bad:
+            print(
+                "Retail PDF would contain dealer-only wording: "
+                + "; ".join(bad[:3]),
+                file=sys.stderr,
+            )
+            return 1
+        pages = build_retail_pdf_processed(
+            processed,
+            builder_name=builder_name,
             updated=updated,
             output_path=pdf_path,
         )

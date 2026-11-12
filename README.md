@@ -41,6 +41,7 @@ python3 -m http.server 8080
 
 ### Pricing rules
 
+- **Finished pricing only** — retail PDFs show **finished** prices. Drop unfinished price columns, unfinished-only sheets, and notes such as “X% less for unfinished.” When a builder lists only unfinished plus a finish upcharge, compute finished wholesale (unfinished + finish cost) once, then apply the multiplier.
 - Retail = wholesale × multiplier, rounded **up** to the next whole dollar (e.g. $683.20 → $684).
 - Output uses **whole dollars** only (no cents in transformed prices).
 - The word **`approx`** must not appear in generated output.
