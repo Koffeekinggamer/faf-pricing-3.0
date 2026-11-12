@@ -38,10 +38,17 @@ def test_englehart_secondary_desk_row():
     assert sec[0] == "EH8001"
 
 
+def _upload_fixture(path: Path) -> bool:
+    try:
+        return path.is_file()
+    except OSError:
+        return False
+
+
 def test_red_barn_and_meadow_forbidden(tmp_path_factory):
     rb = Path("/home/ubuntu/.cursor/projects/workspace/uploads/Red_Barn_739a.zip")
     mw = Path("/home/ubuntu/.cursor/projects/workspace/uploads/Meadow_Wood_fe17.xlsx")
-    if not rb.is_file() or not mw.is_file():
+    if not _upload_fixture(rb) or not _upload_fixture(mw):
         return
     for proc, forbidden in (
         (process_red_barn_workbook(rb, multiplier=2.7), "wholesale"),
