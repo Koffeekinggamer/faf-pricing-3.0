@@ -1,0 +1,9 @@
+[
+  {
+    "builder": "Example Viztech Builder",
+    "file": "/secure/uploads/viztech/example_builder.xlsx",
+    "multiplier": 2.7,
+    "finished_only": true,
+    "note": "Viztech batch"
+  }
+]

@@ -26,6 +26,8 @@ from scripts.pdf_table_layout import (
     sku_table_flowables,
     wide_table_flowables,
 )
+from scripts.dealer_terms import filter_prose_cells, is_dealer_terms_text
+from scripts.pdf_plain_text import clean_pdf_plain_text, escape_for_paragraph_markup
 from scripts.pricing_lib import assert_no_approx
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -51,42 +53,23 @@ def _format_updated(iso_date: str) -> str:
 
 
 def _p(text: str, style: ParagraphStyle) -> Paragraph:
-    safe = (
-        text.replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
-    )
-    assert_no_approx(safe)
-    return Paragraph(safe, style)
+    plain = clean_pdf_plain_text(text)
+    assert_no_approx(plain)
+    return Paragraph(escape_for_paragraph_markup(plain), style)
 
 
-def _prose_paragraph(cells: list, body: ParagraphStyle) -> Paragraph | None:
-    parts: list[str] = []
-    for c in cells:
-        t = str(c).strip()
-        if not t:
-            continue
-        if t.startswith(("-", "•", "*")):
-            parts.append(t)
-        else:
-            parts.append(t)
+def _prose_flowables(cells: list, body: ParagraphStyle) -> list:
+    """One full-width paragraph per source cell — never merge columns."""
+    parts = filter_prose_cells(cells)
     if not parts:
-        return None
-    if len(parts) == 1:
-        joined = parts[0]
-    elif all(p.startswith(("-", "•", "*")) for p in parts):
-        joined = "<br/>".join(_esc_fragment(p) for p in parts)
-    else:
-        joined = "<br/><br/>".join(_esc_fragment(p) for p in parts)
-    return _p(joined, body)
-
-
-def _esc_fragment(text: str) -> str:
-    return (
-        text.replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
-    )
+        return []
+    flow: list = []
+    for part in parts:
+        if is_dealer_terms_text(part):
+            continue
+        flow.append(_p(part, body))
+        flow.append(Spacer(1, 3))
+    return flow
 
 
 def build_retail_pdf(
@@ -294,15 +277,20 @@ def build_retail_pdf_processed(
             story.append(_p(pr.cells[0], subhead_style))
         elif pr.kind == RowKind.INDEX:
             if len(pr.cells) >= 2:
-                data = [pr.cells[i : i + 2] for i in range(0, len(pr.cells), 2)]
-                for pair in data:
-                    while len(pair) < 2:
-                        pair.append("")
+                data = []
+                for i in range(0, len(pr.cells), 2):
+                    left = clean_pdf_plain_text(str(pr.cells[i]))
+                    right = (
+                        clean_pdf_plain_text(str(pr.cells[i + 1]))
+                        if i + 1 < len(pr.cells)
+                        else ""
+                    )
+                    data.append([_p(left, body), _p(right, body)])
                 t = Table(data, colWidths=[3.25 * inch, 3.25 * inch])
                 t.setStyle(
                     TableStyle(
                         [
-                            ("FONTSIZE", (0, 0), (-1, -1), 9),
+                            ("VALIGN", (0, 0), (-1, -1), "TOP"),
                             ("TEXTCOLOR", (0, 0), (-1, -1), FAF_TEXT),
                             ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
                         ]
@@ -312,10 +300,7 @@ def build_retail_pdf_processed(
             elif pr.cells:
                 story.append(_p(" · ".join(pr.cells), body))
         elif pr.kind == RowKind.PROSE:
-            para = _prose_paragraph(pr.cells, body)
-            if para is not None:
-                story.append(para)
-                story.append(Spacer(1, 4))
+            story.extend(_prose_flowables(pr.cells, body))
 
     flush_sku_table()
     flush_wide_block()
