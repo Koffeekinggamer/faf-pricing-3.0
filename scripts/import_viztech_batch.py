@@ -98,7 +98,7 @@ def main() -> int:
         assert_pdfs_no_overlap(pdf_paths)
         assert_pdfs_quality(pdf_paths)
 
-    out = REPO_ROOT / "data" / "viztech_batch01_report.json"
+    out = REPO_ROOT / "data" / "viztech_batch_import_report.json"
     out.write_text(json.dumps(report, indent=2), encoding="utf-8")
     print(json.dumps(report, indent=2))
     return 0 if report["live"] else 1
