@@ -25,7 +25,10 @@ SKIP_SHEET_RE = re.compile(
     r"(?:^markup$|^mark-?up$|^cover$|wholesale\s*markup|finished\s*wholesale\s*markup|"
     r"^finished\s*wholesale\s*markup$|instructions|^admin$|controls|header\s*selection|"
     r"supplement\s*markup|detail\s*prices|customer\s*letter|cheat\s*sheet|"
-    r"do\s*not\s*print|\(for\s*wholesale\)|internet\s*policy.*wholesale|^pricing$)",
+    r"do\s*not\s*print|\(for\s*wholesale\)|internet\s*policy.*wholesale|^pricing$|"
+    r"price_multiplier|_calc|(?:^|_)calc$|for\s*print|markup\s*page|contact\s*and\s*info|"
+    r"^fabric\s*list$|back\s*cover|retail\s*cover|retail\s*options|retail\s*furniture|"
+    r"^2026\s*retail$|retail\s*price\s*list\s*markup)",
     re.I,
 )
 UNFINISHED_SHEET_RE = re.compile(r"unfinished|retail\s*unf", re.I)
@@ -49,6 +52,21 @@ def file_mmyy(path: Path) -> int:
 
 
 def section_title_from_path(path: Path) -> str:
+    fname = path.name
+    if re.search(r"buckeye-rockers__AL_", fname, re.I):
+        return "Authentex"
+    if re.search(r"buckeye-rockers__BR_", fname, re.I):
+        return "Standard"
+    if re.search(r"cupola-furniture__.*LuxWood", fname, re.I):
+        return "LuxWood"
+    if re.search(r"cupola-furniture__", fname, re.I):
+        return "Standard"
+    if re.search(r"Bath_Cabinets", fname, re.I):
+        return "Bath Cabinets"
+    if re.search(r"Bedroom_Tables", fname, re.I):
+        return "Bedroom, Tables & Barstools"
+    if re.search(r"Work_Stations", fname, re.I):
+        return "Work Stations"
     n = path.stem
     for pat, label in (
         (r"Master", "Master"),
@@ -60,6 +78,7 @@ def section_title_from_path(path: Path) -> str:
         (r"Urban_Collection", "Urban Collection"),
         (r"Benning_Bookcase", "Benning Bookcase"),
         (r"Versa_Loft", "Versa Loft Beds"),
+        (r"LuxWood|Luxwood", "LuxWood"),
         (r"Luxhome", "LuxHome"),
         (r"Finished", "Finished"),
         (r"Pricelist", "Price list"),
@@ -170,12 +189,12 @@ def _finished_price_cols(header_rows: list[list], width: int) -> set[int]:
             if not isinstance(c, str):
                 continue
             s = c.lower()
-            if "unfinished" in s and "finished" not in s:
+            if re.search(r"\bunfinished\d*\b", s) and not re.search(r"\bfinished\b", s):
                 unfinished.add(j)
-            elif "finished" in s:
+            elif re.search(r"\bfinished\b", s):
                 finished.add(j)
     if finished:
-        return finished
+        return finished - unfinished
     # Barkman-style: skip col1 markup fractions; take numeric cols not in unfinished set
     return set()
 
@@ -208,7 +227,7 @@ def _transform_row_prices(
     label, _ = _row_item_label(row)
     if not label:
         label = item_hint
-    if re.search(r"approximate\s+weight", label, re.I):
+    if re.search(r"\bapprox", label, re.I):
         return []
     lab = sanitize_retail_text(label, multiplier)
     if not lab:
@@ -274,7 +293,7 @@ def _process_sheet(
 ) -> list[ProcessedRow]:
     out: list[ProcessedRow] = []
     clean_name = sanitize_retail_text(name.replace("_", " "), multiplier) or name
-    if clean_name.lower() not in ("wholesale", "finished wholesale"):
+    if clean_name.strip().lower() not in ("wholesale", "finished wholesale"):
         out.append(ProcessedRow(RowKind.SUBHEAD, [clean_name]))
     item_hint = ""
     i = 0
@@ -313,7 +332,7 @@ def _process_sheet(
             if _is_wholesale_price(c):
                 continue
             raw = _cell_str(c)
-            if re.search(r"approximate\s+weight", raw, re.I):
+            if re.search(r"\bapprox", raw, re.I):
                 continue
             t = sanitize_retail_text(raw, multiplier)
             if t and len(t) > 3:
@@ -322,6 +341,71 @@ def _process_sheet(
             out.append(ProcessedRow(RowKind.PROSE, prose_cells[:4]))
         i += 1
     return out
+
+
+def _unfinished_only_sheet(rows: list[list]) -> bool:
+    for row in rows[:8]:
+        joined = " ".join(_cell_str(c) for c in row if _cell_str(c)).lower()
+        if re.search(r"all\s+prices\s+(are\s+)?given\s+as\s+unfinished", joined):
+            return True
+        if re.search(r"unfinished\s+prices?\s+only", joined):
+            return True
+    return False
+
+
+def _countryside_ambiguous_finished(rows: list[list]) -> bool:
+    """True when header grid mixes finished/unfinished without clear finished columns."""
+    unf = fin = False
+    for row in rows[:40]:
+        for c in row:
+            if not isinstance(c, str):
+                continue
+            s = c.lower()
+            if re.search(r"\bunfinished\b", s):
+                unf = True
+            if re.search(r"\bfinished\b", s) and "unfinished" not in s:
+                fin = True
+    return unf and not fin
+
+
+def process_countryside_rustic_workbook(
+    path: Path,
+    *,
+    multiplier: float = MULTIPLIER_DEFAULT,
+) -> ViztechBuildResult:
+    sheets = load_workbook_sheets(path)
+    spots: list[SpotSample] = []
+    skipped: list[str] = []
+    out: list[ProcessedRow] = []
+    has_grid = False
+
+    for name, rows in sheets.items():
+        low = name.casefold()
+        if "retail" in low:
+            skipped.append(name)
+            continue
+        if "markup" in low and "wholesale" not in low:
+            skipped.append(name)
+            continue
+        if not rows or not any(any(c not in (None, "") for c in r) for r in rows):
+            skipped.append(name)
+            continue
+        if _countryside_ambiguous_finished(rows):
+            return ViztechBuildResult(
+                [],
+                spots,
+                skipped + [name],
+                ["Finished vs unfinished not distinguishable"],
+            )
+        before = len(out)
+        out.extend(_process_sheet(name, rows, multiplier=multiplier, spots=spots))
+        if len(out) > before:
+            has_grid = True
+
+    if not has_grid:
+        return ViztechBuildResult([], spots, skipped, [f"No wholesale grid in {path.name}"])
+
+    return ViztechBuildResult(collapse_blank_rows(out), spots, skipped, [])
 
 
 def luxhome_has_finished_products(path: Path) -> bool:
@@ -341,7 +425,16 @@ def process_viztech_workbook(
     multiplier: float = MULTIPLIER_DEFAULT,
     builder_name: str | None = None,
 ) -> ViztechBuildResult:
+    if re.search(r"markup-calculator", path.name, re.I):
+        return process_countryside_rustic_workbook(path, multiplier=multiplier)
     sheets = load_workbook_sheets(path)
+    if any(_unfinished_only_sheet(rows) for rows in sheets.values()):
+        return ViztechBuildResult(
+            [],
+            [],
+            list(sheets.keys()),
+            [f"Unfinished-only wholesale prices in {path.name}"],
+        )
     spots: list[SpotSample] = []
     skipped: list[str] = []
     out: list[ProcessedRow] = []
@@ -354,7 +447,13 @@ def process_viztech_workbook(
         if UNFINISHED_SHEET_RE.search(name):
             skipped.append(name)
             continue
+        if re.search(r"\bretail\b", name, re.I) and not re.search(r"\bwholesale\b", name, re.I):
+            skipped.append(name)
+            continue
         if not rows or not any(any(c not in (None, "") for c in r) for r in rows):
+            skipped.append(name)
+            continue
+        if _unfinished_only_sheet(rows):
             skipped.append(name)
             continue
         before = len(out)
@@ -415,7 +514,8 @@ def merge_builder_files(
         skipped.extend(res.skipped_sheets)
         spots.extend(res.spots)
 
-    if len(all_rows) <= 1:
+    data_rows = [r for r in all_rows if r.kind not in (RowKind.TITLE, RowKind.SECTION)]
+    if len(all_rows) <= 1 or not data_rows:
         return ViztechBuildResult([], spots, skipped, warnings + ["No content after merge"])
 
     return ViztechBuildResult(collapse_blank_rows(all_rows), spots[:3], skipped, warnings)
