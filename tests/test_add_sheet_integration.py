@@ -2,6 +2,7 @@ from pathlib import Path
 
 from scripts.builders_data import BUILDERS_PATH, load_builders
 from scripts import builders_data
+from scripts import multipliers_data
 from scripts.add_sheet import main as add_main
 import sys
 
@@ -9,6 +10,11 @@ import sys
 def test_add_sheet_look_alike_run(tmp_path, monkeypatch):
     """End-to-end with look-alike fixture; does not touch live builders.json."""
     monkeypatch.setattr(builders_data, "BUILDERS_PATH", tmp_path / "builders.json")
+    monkeypatch.setattr(
+        multipliers_data,
+        "MULTIPLIERS_PATH",
+        tmp_path / "multipliers.json",
+    )
     monkeypatch.chdir(tmp_path)
     sheets = tmp_path / "sheets"
     sheets.mkdir()

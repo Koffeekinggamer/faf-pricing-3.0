@@ -12,6 +12,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
 from scripts.builders_data import REPO_ROOT as ROOT, slugify, upsert_builder
+from scripts.multipliers_data import resolve_multiplier, set_stored_multiplier
 from scripts.artisan_book import (
     artisan_forbidden_text,
     is_artisan_style_grid,
@@ -91,8 +92,14 @@ def main() -> int:
     parser.add_argument(
         "--multiplier",
         type=float,
-        required=True,
-        help="Retail multiplier (wholesale × multiplier, round up)",
+        default=None,
+        help="Retail multiplier (wholesale × multiplier, round up). "
+        "Omit for an existing builder to use the saved multiplier.",
+    )
+    parser.add_argument(
+        "--override-multiplier",
+        action="store_true",
+        help="Allow changing the saved multiplier for this builder.",
     )
     parser.add_argument("--file", required=True, type=Path, help="Dealer source file")
     parser.add_argument("--note", default=None, help="Optional short note on the index")
@@ -107,10 +114,6 @@ def main() -> int:
         help="Worksheet name for single-sheet .xlsx (ignored for multi-sheet books)",
     )
     args = parser.parse_args()
-
-    if args.multiplier <= 0:
-        print("Multiplier must be positive.", file=sys.stderr)
-        return 1
 
     source = args.file.expanduser().resolve()
     if not source.exists():
@@ -129,6 +132,16 @@ def main() -> int:
         if args.builder.lower() in ("meadow wood", "meadow"):
             builder_name = meadow_builder_display_name()
 
+    try:
+        multiplier, persist_mult = resolve_multiplier(
+            builder_name,
+            args.multiplier,
+            override=args.override_multiplier,
+        )
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+
     assert_no_approx(builder_name, args.note or "")
 
     slug = slugify(builder_name)
@@ -137,7 +150,7 @@ def main() -> int:
     rel_pdf = f"sheets/{pdf_name}"
 
     if is_forks_valley_bundle(source):
-        processed = process_forks_valley_bundle(source, multiplier=args.multiplier)
+        processed = process_forks_valley_bundle(source, multiplier=multiplier)
         bad = forks_valley_forbidden_text(processed)
         if bad:
             print(
@@ -154,7 +167,7 @@ def main() -> int:
         )
         print(f"Wrote {pages}-page retail PDF", file=sys.stderr)
     elif is_j_troyer_bundle(source):
-        processed = process_j_troyer_bundle(source, multiplier=args.multiplier)
+        processed = process_j_troyer_bundle(source, multiplier=multiplier)
         bad = j_troyer_forbidden_text(processed)
         if bad:
             print(
@@ -171,7 +184,7 @@ def main() -> int:
         )
         print(f"Wrote {pages}-page retail PDF", file=sys.stderr)
     elif is_frog_pond_workbook(source):
-        processed = process_frog_pond_workbook(source, multiplier=args.multiplier)
+        processed = process_frog_pond_workbook(source, multiplier=multiplier)
         bad = frog_pond_forbidden_text(processed)
         if bad:
             print(
@@ -188,7 +201,7 @@ def main() -> int:
         )
         print(f"Wrote {pages}-page retail PDF", file=sys.stderr)
     elif is_woodside_workbook(source):
-        processed = process_woodside_workbook(source, multiplier=args.multiplier)
+        processed = process_woodside_workbook(source, multiplier=multiplier)
         bad = woodside_forbidden_text(processed)
         if bad:
             print(
@@ -205,7 +218,7 @@ def main() -> int:
         )
         print(f"Wrote {pages}-page retail PDF", file=sys.stderr)
     elif is_townline_workbook(source):
-        processed = process_townline_workbook(source, multiplier=args.multiplier)
+        processed = process_townline_workbook(source, multiplier=multiplier)
         bad = townline_forbidden_text(processed)
         if bad:
             print(
@@ -222,7 +235,7 @@ def main() -> int:
         )
         print(f"Wrote {pages}-page retail PDF", file=sys.stderr)
     elif is_red_barn_workbook(source):
-        processed = process_red_barn_workbook(source, multiplier=args.multiplier)
+        processed = process_red_barn_workbook(source, multiplier=multiplier)
         bad = red_barn_forbidden_text(processed)
         if bad:
             print(
@@ -240,7 +253,7 @@ def main() -> int:
         print(f"Wrote {pages}-page retail PDF", file=sys.stderr)
     elif is_meadow_wood_workbook(source):
         processed = process_meadow_wood_workbook(
-            source, multiplier=args.multiplier
+            source, multiplier=multiplier
         )
         bad = meadow_wood_forbidden_text(processed)
         if bad:
@@ -258,7 +271,7 @@ def main() -> int:
         )
         print(f"Wrote {pages}-page retail PDF", file=sys.stderr)
     elif is_lamb_workbook(source):
-        processed = process_lamb_workbook(source, multiplier=args.multiplier)
+        processed = process_lamb_workbook(source, multiplier=multiplier)
         bad = lamb_forbidden_text(processed)
         if bad:
             print(
@@ -276,7 +289,7 @@ def main() -> int:
         print(f"Wrote {pages}-page retail PDF", file=sys.stderr)
     elif is_farmside_workbook(source):
         processed = process_farmside_workbook(
-            source, builder_name=args.builder, multiplier=args.multiplier
+            source, builder_name=args.builder, multiplier=multiplier
         )
         bad = farmside_forbidden_text(processed)
         if bad:
@@ -295,7 +308,7 @@ def main() -> int:
         print(f"Wrote {pages}-page retail PDF", file=sys.stderr)
     elif is_fn_chairs_workbook(source):
         processed = process_fn_chairs_workbook(
-            source, builder_name=args.builder, multiplier=args.multiplier
+            source, builder_name=args.builder, multiplier=multiplier
         )
         bad = fn_chairs_forbidden_text(processed)
         if bad:
@@ -323,7 +336,7 @@ def main() -> int:
             processed, _title = process_artisan_book(
                 grid,
                 builder_name=args.builder,
-                multiplier=args.multiplier,
+                multiplier=multiplier,
             )
             bad = artisan_forbidden_text(processed)
             if bad:
@@ -345,7 +358,7 @@ def main() -> int:
             processed, _title = process_dealer_book(
                 grid,
                 builder_name=args.builder,
-                multiplier=args.multiplier,
+                multiplier=multiplier,
                 catalog_date=catalog_date,
             )
             bad = forbidden_retail_text(processed)
@@ -364,7 +377,7 @@ def main() -> int:
             )
             print(f"Wrote {pages}-page retail PDF", file=sys.stderr)
         else:
-            grid = apply_multiplier_to_grid(grid, args.multiplier)
+            grid = apply_multiplier_to_grid(grid, multiplier)
             build_retail_pdf(
                 grid,
                 builder_name=args.builder,
@@ -379,8 +392,14 @@ def main() -> int:
         args.note,
     )
 
+    if persist_mult:
+        set_stored_multiplier(builder_name, multiplier)
+
     action = "Replaced" if replaced else "Added"
-    print(f"{action} {entry['name']} → {rel_pdf} (updated {entry['updated']})")
+    mult_note = f" (multiplier {multiplier})" if args.multiplier is None else ""
+    print(
+        f"{action} {entry['name']} → {rel_pdf} (updated {entry['updated']}){mult_note}"
+    )
     return 0
 
 
