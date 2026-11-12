@@ -86,7 +86,7 @@ def read_dealer_file(path: Path, sheet_name: str | None = None) -> list[list]:
     suffix = path.suffix.lower()
     if suffix == ".csv":
         return read_csv(path)
-    if suffix == ".xlsx":
+    if suffix in (".xlsx", ".xlsm"):
         return read_xlsx(path, sheet_name=sheet_name)
     if suffix == ".xls":
         return read_xls(path)

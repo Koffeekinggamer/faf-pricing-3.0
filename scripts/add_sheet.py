@@ -22,6 +22,37 @@ from scripts.dealer_book import (
     forbidden_retail_text,
     process_dealer_book,
 )
+from scripts.farmside_book import (
+    farmside_forbidden_text,
+    is_farmside_workbook,
+    process_farmside_workbook,
+)
+from scripts.fn_chairs_book import (
+    fn_chairs_forbidden_text,
+    is_fn_chairs_workbook,
+    process_fn_chairs_workbook,
+)
+from scripts.forks_valley_book import (
+    forks_valley_forbidden_text,
+    is_forks_valley_bundle,
+    process_forks_valley_bundle,
+)
+from scripts.lamb_book import (
+    is_lamb_workbook,
+    lamb_forbidden_text,
+    process_lamb_workbook,
+)
+from scripts.meadow_wood_book import (
+    is_meadow_wood_workbook,
+    meadow_wood_forbidden_text,
+    meadow_builder_display_name,
+    process_meadow_wood_workbook,
+)
+from scripts.red_barn_book import (
+    is_red_barn_workbook,
+    process_red_barn_workbook,
+    red_barn_forbidden_text,
+)
 from scripts.pdf_builder import build_retail_pdf, build_retail_pdf_processed
 from scripts.pricing_lib import assert_no_approx
 from scripts.read_dealer_file import (
@@ -53,7 +84,7 @@ def main() -> int:
     parser.add_argument(
         "--sheet",
         default=None,
-        help="Worksheet name for .xlsx (default: Pricelist if present)",
+        help="Worksheet name for single-sheet .xlsx (ignored for multi-sheet books)",
     )
     args = parser.parse_args()
 
@@ -62,7 +93,7 @@ def main() -> int:
         return 1
 
     source = args.file.expanduser().resolve()
-    if not source.is_file():
+    if not source.exists():
         print(f"File not found: {source}", file=sys.stderr)
         return 1
 
@@ -73,26 +104,21 @@ def main() -> int:
         print("--date must be YYYY-MM-DD", file=sys.stderr)
         return 1
 
-    assert_no_approx(args.builder, args.note or "")
+    builder_name = args.builder
+    if source.is_file() and is_meadow_wood_workbook(source):
+        if args.builder.lower() in ("meadow wood", "meadow"):
+            builder_name = meadow_builder_display_name()
 
-    try:
-        grid = read_dealer_file(source, sheet_name=args.sheet)
-    except DealerFileError as exc:
-        print(str(exc), file=sys.stderr)
-        return 1
+    assert_no_approx(builder_name, args.note or "")
 
-    slug = slugify(args.builder)
+    slug = slugify(builder_name)
     pdf_name = f"{slug}.pdf"
     pdf_path = SHEETS_DIR / pdf_name
     rel_pdf = f"sheets/{pdf_name}"
 
-    if is_artisan_style_grid(grid):
-        processed, _title = process_artisan_book(
-            grid,
-            builder_name=args.builder,
-            multiplier=args.multiplier,
-        )
-        bad = artisan_forbidden_text(processed)
+    if is_forks_valley_bundle(source):
+        processed = process_forks_valley_bundle(source, multiplier=args.multiplier)
+        bad = forks_valley_forbidden_text(processed)
         if bad:
             print(
                 "Retail PDF would contain dealer-only wording: "
@@ -107,15 +133,83 @@ def main() -> int:
             output_path=pdf_path,
         )
         print(f"Wrote {pages}-page retail PDF", file=sys.stderr)
-    elif is_dealer_book_grid(grid):
-        catalog_date = extract_catalog_date(grid)
-        processed, _title = process_dealer_book(
-            grid,
-            builder_name=args.builder,
-            multiplier=args.multiplier,
-            catalog_date=catalog_date,
+    elif is_red_barn_workbook(source):
+        processed = process_red_barn_workbook(source, multiplier=args.multiplier)
+        bad = red_barn_forbidden_text(processed)
+        if bad:
+            print(
+                "Retail PDF would contain dealer-only wording: "
+                + "; ".join(bad[:3]),
+                file=sys.stderr,
+            )
+            return 1
+        pages = build_retail_pdf_processed(
+            processed,
+            builder_name=builder_name,
+            updated=updated,
+            output_path=pdf_path,
         )
-        bad = forbidden_retail_text(processed)
+        print(f"Wrote {pages}-page retail PDF", file=sys.stderr)
+    elif is_meadow_wood_workbook(source):
+        processed = process_meadow_wood_workbook(
+            source, multiplier=args.multiplier
+        )
+        bad = meadow_wood_forbidden_text(processed)
+        if bad:
+            print(
+                "Retail PDF would contain dealer-only wording: "
+                + "; ".join(bad[:3]),
+                file=sys.stderr,
+            )
+            return 1
+        pages = build_retail_pdf_processed(
+            processed,
+            builder_name=builder_name,
+            updated=updated,
+            output_path=pdf_path,
+        )
+        print(f"Wrote {pages}-page retail PDF", file=sys.stderr)
+    elif is_lamb_workbook(source):
+        processed = process_lamb_workbook(source, multiplier=args.multiplier)
+        bad = lamb_forbidden_text(processed)
+        if bad:
+            print(
+                "Retail PDF would contain dealer-only wording: "
+                + "; ".join(bad[:3]),
+                file=sys.stderr,
+            )
+            return 1
+        pages = build_retail_pdf_processed(
+            processed,
+            builder_name=builder_name,
+            updated=updated,
+            output_path=pdf_path,
+        )
+        print(f"Wrote {pages}-page retail PDF", file=sys.stderr)
+    elif is_farmside_workbook(source):
+        processed = process_farmside_workbook(
+            source, builder_name=args.builder, multiplier=args.multiplier
+        )
+        bad = farmside_forbidden_text(processed)
+        if bad:
+            print(
+                "Retail PDF would contain dealer-only wording: "
+                + "; ".join(bad[:3]),
+                file=sys.stderr,
+            )
+            return 1
+        pages = build_retail_pdf_processed(
+            processed,
+            builder_name=args.builder,
+            updated=updated,
+            output_path=pdf_path,
+        )
+        print(f"Wrote {pages}-page retail PDF", file=sys.stderr)
+    elif is_fn_chairs_workbook(source):
+        processed = process_fn_chairs_workbook(
+            source, builder_name=args.builder, multiplier=args.multiplier
+        )
+        bad = fn_chairs_forbidden_text(processed)
         if bad:
             print(
                 "Retail PDF would contain dealer-only wording: "
@@ -131,16 +225,67 @@ def main() -> int:
         )
         print(f"Wrote {pages}-page retail PDF", file=sys.stderr)
     else:
-        grid = apply_multiplier_to_grid(grid, args.multiplier)
-        build_retail_pdf(
-            grid,
-            builder_name=args.builder,
-            updated=updated,
-            output_path=pdf_path,
-        )
+        try:
+            grid = read_dealer_file(source, sheet_name=args.sheet)
+        except DealerFileError as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+
+        if is_artisan_style_grid(grid):
+            processed, _title = process_artisan_book(
+                grid,
+                builder_name=args.builder,
+                multiplier=args.multiplier,
+            )
+            bad = artisan_forbidden_text(processed)
+            if bad:
+                print(
+                    "Retail PDF would contain dealer-only wording: "
+                    + "; ".join(bad[:3]),
+                    file=sys.stderr,
+                )
+                return 1
+            pages = build_retail_pdf_processed(
+                processed,
+                builder_name=args.builder,
+                updated=updated,
+                output_path=pdf_path,
+            )
+            print(f"Wrote {pages}-page retail PDF", file=sys.stderr)
+        elif is_dealer_book_grid(grid):
+            catalog_date = extract_catalog_date(grid)
+            processed, _title = process_dealer_book(
+                grid,
+                builder_name=args.builder,
+                multiplier=args.multiplier,
+                catalog_date=catalog_date,
+            )
+            bad = forbidden_retail_text(processed)
+            if bad:
+                print(
+                    "Retail PDF would contain dealer-only wording: "
+                    + "; ".join(bad[:3]),
+                    file=sys.stderr,
+                )
+                return 1
+            pages = build_retail_pdf_processed(
+                processed,
+                builder_name=args.builder,
+                updated=updated,
+                output_path=pdf_path,
+            )
+            print(f"Wrote {pages}-page retail PDF", file=sys.stderr)
+        else:
+            grid = apply_multiplier_to_grid(grid, args.multiplier)
+            build_retail_pdf(
+                grid,
+                builder_name=args.builder,
+                updated=updated,
+                output_path=pdf_path,
+            )
 
     entry, replaced = upsert_builder(
-        args.builder,
+        builder_name,
         rel_pdf,
         updated,
         args.note,
