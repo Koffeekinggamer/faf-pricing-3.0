@@ -74,6 +74,11 @@ from scripts.woodside_book import (
     process_woodside_workbook,
     woodside_forbidden_text,
 )
+from scripts.country_view_oak_book import (
+    country_view_oak_forbidden,
+    is_country_view_oak_pdf,
+    process_country_view_oak_pdf,
+)
 from scripts.pdf_builder import build_retail_pdf, build_retail_pdf_processed
 from scripts.pricing_lib import assert_no_approx
 from scripts.read_dealer_file import (
@@ -149,7 +154,30 @@ def main() -> int:
     pdf_path = SHEETS_DIR / pdf_name
     rel_pdf = f"sheets/{pdf_name}"
 
-    if is_forks_valley_bundle(source):
+    if is_country_view_oak_pdf(source):
+        processed, stats = process_country_view_oak_pdf(
+            source, multiplier=multiplier
+        )
+        bad = country_view_oak_forbidden(processed)
+        if bad:
+            print(
+                "Retail PDF would contain dealer-only wording: "
+                + "; ".join(bad[:3]),
+                file=sys.stderr,
+            )
+            return 1
+        pages = build_retail_pdf_processed(
+            processed,
+            builder_name=builder_name,
+            updated=updated,
+            output_path=pdf_path,
+        )
+        print(
+            f"Wrote {pages}-page retail PDF "
+            f"({stats['expected_wholesale_dollars']} prices @ {multiplier})",
+            file=sys.stderr,
+        )
+    elif is_forks_valley_bundle(source):
         processed = process_forks_valley_bundle(source, multiplier=multiplier)
         bad = forks_valley_forbidden_text(processed)
         if bad:
