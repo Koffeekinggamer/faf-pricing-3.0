@@ -32,6 +32,15 @@ def load_builders(path: Path | None = None) -> list[dict]:
     return data
 
 
+def find_builder_by_name(name: str, path: Path | None = None) -> dict | None:
+    """Return catalog entry by display name (case-insensitive), or None."""
+    key = sort_key(name)
+    for b in load_builders(path):
+        if sort_key(b.get("name", "")) == key:
+            return b
+    return None
+
+
 def save_builders(builders: list[dict], path: Path | None = None) -> None:
     path = path or BUILDERS_PATH
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -47,6 +56,7 @@ def upsert_builder(
     updated: str,
     note: str | None = None,
     *,
+    price_list_date: str | None = None,
     path: Path | None = None,
 ) -> tuple[dict, bool]:
     """Insert or replace builder by name (case-insensitive). Returns (entry, replaced)."""
@@ -60,6 +70,8 @@ def upsert_builder(
     }
     if note:
         entry["note"] = note
+    if price_list_date:
+        entry["price_list_date"] = price_list_date
 
     new_list: list[dict] = []
     found = False

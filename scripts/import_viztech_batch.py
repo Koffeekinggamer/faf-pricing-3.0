@@ -14,7 +14,8 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from scripts.builders_data import slugify, upsert_builder
+from scripts.builders_data import find_builder_by_name, slugify, upsert_builder
+from scripts.price_list_date import evaluate_price_list_update, infer_for_viztech_files
 from scripts.multipliers_data import set_stored_multiplier
 from scripts.pdf_builder import build_retail_pdf_processed
 from scripts.pdf_overlap_check import assert_pdfs_no_overlap
@@ -67,6 +68,13 @@ def main() -> int:
             report["skipped"].append({"builder": builder_name, "reason": "no rows"})
             continue
 
+        incoming_pld = infer_for_viztech_files(files)
+        existing = find_builder_by_name(builder_name)
+        allow, pld_reason = evaluate_price_list_update(existing, incoming_pld)
+        if not allow:
+            report["skipped"].append({"builder": builder_name, "reason": pld_reason})
+            continue
+
         bad = viztech_forbidden(res.rows)
         if bad:
             report["skipped"].append(
@@ -83,7 +91,14 @@ def main() -> int:
             output_path=pdf_path,
         )
         pdf_paths.append(pdf_path)
-        upsert_builder(builder_name, f"sheets/{slug}.pdf", args.date, None)
+        pld_iso = incoming_pld.isoformat() if incoming_pld else None
+        upsert_builder(
+            builder_name,
+            f"sheets/{slug}.pdf",
+            args.date,
+            None,
+            price_list_date=pld_iso,
+        )
         set_stored_multiplier(builder_name, mult)
         report["live"].append({"name": builder_name, "pages": pages, "pdf": str(pdf_path)})
         report["spot_checks"][builder_name] = [
