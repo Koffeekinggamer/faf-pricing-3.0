@@ -83,6 +83,21 @@ def _effective_date(book: xlrd.book.Book) -> str:
     return DOC_TITLE
 
 
+def woodside_price_list_date(path: Path):
+    """Catalog effective date from Woodside upload (for price_list_date guard)."""
+    from scripts.price_list_date import parse_price_list_phrase
+
+    xls = _resolve_xls(path)
+    if not xls:
+        return None
+    book = xlrd.open_workbook(str(xls))
+    title = _effective_date(book)
+    if "·" in title:
+        suffix = title.split("·", 1)[1].strip()
+        return parse_price_list_phrase(suffix)
+    return None
+
+
 def _transform_price_row(row: list, multiplier: float) -> list[str]:
     row = _trim_left_block(row)
     out: list[str] = []

@@ -42,7 +42,8 @@
   {
     "name": "Artisan Chairs",
     "pdf": "sheets/Artisan_Chairs.pdf",
-    "updated": "2026-11-12"
+    "updated": "2026-11-12",
+    "price_list_date": "2026-03-01"
   },
   {
     "name": "Ashery Oak",
@@ -122,17 +123,20 @@
   {
     "name": "Country Side Rustic Log Furniture",
     "pdf": "sheets/Country_Side_Rustic_Log_Furniture.pdf",
-    "updated": "2026-11-12"
+    "updated": "2026-11-12",
+    "price_list_date": "2026-09-15"
   },
   {
     "name": "Country View Furniture",
     "pdf": "sheets/Country_View_Furniture.pdf",
-    "updated": "2026-11-12"
+    "updated": "2026-11-12",
+    "price_list_date": "2026-04-20"
   },
   {
     "name": "Country View Oak",
     "pdf": "sheets/Country_View_Oak.pdf",
-    "updated": "2026-11-13"
+    "updated": "2026-11-13",
+    "price_list_date": "2025-04-15"
   },
   {
     "name": "Countryside Tables",
@@ -177,12 +181,14 @@
   {
     "name": "FN Chairs",
     "pdf": "sheets/FN_Chairs.pdf",
-    "updated": "2026-11-12"
+    "updated": "2026-11-12",
+    "price_list_date": "2026-09-01"
   },
   {
     "name": "Forks Valley Woodworking",
     "pdf": "sheets/Forks_Valley_Woodworking.pdf",
-    "updated": "2026-11-12"
+    "updated": "2026-11-12",
+    "price_list_date": "2026-01-01"
   },
   {
     "name": "Frog Pond Furniture",
@@ -202,17 +208,20 @@
   {
     "name": "Lamb Woodworking",
     "pdf": "sheets/Lamb_Woodworking.pdf",
-    "updated": "2026-11-12"
+    "updated": "2026-11-12",
+    "price_list_date": "2026-05-01"
   },
   {
     "name": "Meadow Wood",
     "pdf": "sheets/Meadow_Wood.pdf",
-    "updated": "2026-11-12"
+    "updated": "2026-11-12",
+    "price_list_date": "2026-07-01"
   },
   {
     "name": "Millcraft",
     "pdf": "sheets/Millcraft.pdf",
-    "updated": "2026-11-12"
+    "updated": "2026-11-12",
+    "price_list_date": "2027-01-11"
   },
   {
     "name": "Red Barn Woodworking",
@@ -222,7 +231,8 @@
   {
     "name": "Townline Furniture",
     "pdf": "sheets/Townline_Furniture.pdf",
-    "updated": "2026-11-12"
+    "updated": "2026-11-12",
+    "price_list_date": "2026-03-01"
   },
   {
     "name": "Woodside Woodworks",

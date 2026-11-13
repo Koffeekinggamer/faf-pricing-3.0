@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""Add or refresh a builder retail price sheet on Pricing 3.0."""
+"""Add or refresh a builder retail price sheet on Pricing 3.0.
+
+Standing rule: when the builder already exists in builders.json, replace its PDF
+only if the incoming upload's price list effective/printed date is newer than the
+stored price_list_date. Skip (no file changes) when the date is the same, older,
+or cannot be determined. Pass --price-list-date YYYY-MM-DD when auto-detect fails.
+"""
 
 from __future__ import annotations
 
@@ -11,7 +17,12 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from scripts.builders_data import REPO_ROOT as ROOT, slugify, upsert_builder
+from scripts.builders_data import REPO_ROOT as ROOT, find_builder_by_name, slugify, upsert_builder
+from scripts.price_list_date import (
+    evaluate_price_list_update,
+    infer_from_source,
+    parse_iso_price_list_date,
+)
 from scripts.multipliers_data import resolve_multiplier, set_stored_multiplier
 from scripts.artisan_book import (
     artisan_forbidden_text,
@@ -114,6 +125,12 @@ def main() -> int:
         help="Updated date YYYY-MM-DD (default: today)",
     )
     parser.add_argument(
+        "--price-list-date",
+        default=None,
+        metavar="YYYY-MM-DD",
+        help="Printed/effective price list date (default: auto-detect from source)",
+    )
+    parser.add_argument(
         "--sheet",
         default=None,
         help="Worksheet name for single-sheet .xlsx (ignored for multi-sheet books)",
@@ -148,6 +165,21 @@ def main() -> int:
         return 1
 
     assert_no_approx(builder_name, args.note or "")
+
+    existing = find_builder_by_name(builder_name)
+    if args.price_list_date:
+        incoming_pld = parse_iso_price_list_date(args.price_list_date)
+        if incoming_pld is None:
+            print("--price-list-date must be YYYY-MM-DD", file=sys.stderr)
+            return 1
+    else:
+        incoming_pld = infer_from_source(source, builder_name, sheet=args.sheet)
+
+    allow, pld_reason = evaluate_price_list_update(existing, incoming_pld)
+    if not allow:
+        print(f"Skipped {builder_name}: {pld_reason}", file=sys.stderr)
+        print(f"Skipped {builder_name}: {pld_reason}")
+        return 2 if incoming_pld is None else 0
 
     slug = slugify(builder_name)
     pdf_name = f"{slug}.pdf"
@@ -413,11 +445,13 @@ def main() -> int:
                 output_path=pdf_path,
             )
 
+    pld_iso = incoming_pld.isoformat() if incoming_pld else None
     entry, replaced = upsert_builder(
         builder_name,
         rel_pdf,
         updated,
         args.note,
+        price_list_date=pld_iso,
     )
 
     if persist_mult:

@@ -51,6 +51,18 @@ python3 -m http.server 8080
 
 Re-adding the same builder name **replaces** the PDF and updates metadata (no duplicate rows). `builders.json` is kept sorted A→Z (case-insensitive, leading punctuation ignored).
 
+### Price list date (standing rule)
+
+Each builder stores a **`price_list_date`** (YYYY-MM-DD): the effective or printed date on the dealer price list, not the day the PDF was generated (`updated`).
+
+When a builder **already exists**, `add_sheet.py` and `import_viztech_batch.py` **replace the PDF only if the incoming list date is newer** than the stored `price_list_date`. If the date is the same or older, the run skips that builder and leaves files unchanged. If the incoming date **cannot be determined**, nothing is replaced (use `--price-list-date` on `add_sheet.py` when auto-detect fails). Viztech uploads infer the date from filename version stamps such as `_0526` (May 2026).
+
+Backfill stored dates from existing retail PDF titles:
+
+```bash
+python scripts/backfill_price_list_dates.py --write
+```
+
 ## Repository layout
 
 | Path | Purpose |
