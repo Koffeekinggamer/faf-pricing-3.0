@@ -10,7 +10,7 @@ from typing import Any, Iterable
 import openpyxl
 
 from scripts.dealer_book import ProcessedRow, RowKind, collapse_blank_rows, row_is_blank
-from scripts.dealer_terms import is_dealer_terms_text
+from scripts.dealer_terms import is_builder_contact_text, is_dealer_terms_text
 from scripts.pdf_plain_text import clean_pdf_plain_text
 from scripts.retail_text import forbidden_phrases, retail_price_cell, sanitize_retail_text
 
@@ -174,9 +174,8 @@ def _drop_row(row: list, joined: str) -> bool:
         return True
     if re.search(r"\bnet\s*30\b", low):
         return True
-    if re.search(r"\b(fax|phone|e-?mail|@)\b", low) and "$" not in joined:
-        if len(joined) < 120:
-            return True
+    if is_builder_contact_text(joined):
+        return True
     return False
 
 
@@ -337,7 +336,9 @@ def _process_sheet(
             t = sanitize_retail_text(raw, multiplier)
             if t and len(t) > 3:
                 prose_cells.append(t)
-        if prose_cells and len(" ".join(prose_cells)) > 40:
+        if prose_cells and len(" ".join(prose_cells)) > 40 and not any(
+            is_builder_contact_text(c) for c in prose_cells
+        ):
             out.append(ProcessedRow(RowKind.PROSE, prose_cells[:4]))
         i += 1
     return out
