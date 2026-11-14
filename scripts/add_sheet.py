@@ -87,8 +87,8 @@ from scripts.woodside_book import (
 )
 from scripts.country_view_oak_book import (
     country_view_oak_forbidden,
-    is_country_view_oak_pdf,
-    process_country_view_oak_pdf,
+    is_country_view_oak_workbook,
+    process_country_view_oak_workbook,
 )
 from scripts.pdf_builder import build_retail_pdf, build_retail_pdf_processed
 from scripts.pricing_lib import assert_no_approx
@@ -129,6 +129,11 @@ def main() -> int:
         default=None,
         metavar="YYYY-MM-DD",
         help="Printed/effective price list date (default: auto-detect from source)",
+    )
+    parser.add_argument(
+        "--force-replace",
+        action="store_true",
+        help="Replace existing PDF even when price list date is not newer",
     )
     parser.add_argument(
         "--sheet",
@@ -176,6 +181,9 @@ def main() -> int:
         incoming_pld = infer_from_source(source, builder_name, sheet=args.sheet)
 
     allow, pld_reason = evaluate_price_list_update(existing, incoming_pld)
+    if args.force_replace and existing:
+        allow = True
+        pld_reason = "forced replace"
     if not allow:
         print(f"Skipped {builder_name}: {pld_reason}", file=sys.stderr)
         print(f"Skipped {builder_name}: {pld_reason}")
@@ -186,8 +194,8 @@ def main() -> int:
     pdf_path = SHEETS_DIR / pdf_name
     rel_pdf = f"sheets/{pdf_name}"
 
-    if is_country_view_oak_pdf(source):
-        processed, stats = process_country_view_oak_pdf(
+    if is_country_view_oak_workbook(source):
+        processed, stats = process_country_view_oak_workbook(
             source, multiplier=multiplier
         )
         bad = country_view_oak_forbidden(processed)
@@ -206,7 +214,7 @@ def main() -> int:
         )
         print(
             f"Wrote {pages}-page retail PDF "
-            f"({stats['expected_wholesale_dollars']} prices @ {multiplier})",
+            f"({stats['wide_rows']} price rows @ {multiplier})",
             file=sys.stderr,
         )
     elif is_forks_valley_bundle(source):

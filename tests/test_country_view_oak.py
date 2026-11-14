@@ -1,51 +1,91 @@
+import os
 from pathlib import Path
 
 import pytest
 
 from scripts.country_view_oak_book import (
-    _transform_price_line,
-    is_country_view_oak_pdf,
-    process_country_view_oak_pdf,
+    BUILDER_MARKUP,
+    MULTIPLIER_DEFAULT,
+    is_country_view_oak_workbook,
+    process_country_view_oak_workbook,
+    retail_from_wholesale,
+    spot_check_36x48_solid,
+    wholesale_values_five_group,
 )
 from scripts.pricing_lib import retail_whole_dollar
 
-PDF = Path("/tmp/Country_View_Oak_Finished_April2025.pdf")
-
-
-def test_country_view_oak_line_retail_math():
-    cells = _transform_price_line(
-        '36" X 48" Solid 4 $1,007 $1,359 $1,309 $1,208 $1,460', 2.7
+CVO_XLSX = Path(
+    os.environ.get(
+        "CVO_WORKBOOK",
+        "/home/ubuntu/.cursor/projects/workspace/uploads/"
+        "Country_View_Oak_April2025_fb1d.xlsx",
     )
-    assert cells[1] == "$2,719"
-    assert cells[-1] == "$3,942"
-    assert retail_whole_dollar(71, 2.7) == 192
+)
 
 
-@pytest.mark.skipif(not PDF.is_file(), reason="Country View Oak upload PDF not on disk")
-def test_country_view_oak_extraction_parity():
-    rows, stats = process_country_view_oak_pdf(PDF, multiplier=2.7)
-    assert stats["dollar_parity"]
-    assert stats["expected_wholesale_dollars"] > 5000
-    assert len(rows) > 100
+def test_oak_36x48_solid_site_price_from_wholesale():
+    assert retail_whole_dollar(357, 2.7) == 964
+    assert retail_from_wholesale(357) == "$964"
 
 
-@pytest.mark.skipif(not PDF.is_file(), reason="Country View Oak upload PDF not on disk")
-def test_country_view_oak_spot_retail():
-    assert retail_whole_dollar(1007, 2.7) == 2719
-    assert retail_whole_dollar(1460, 2.7) == 3942
-    rows, _ = process_country_view_oak_pdf(PDF, multiplier=2.7)
-    wide = [r for r in rows if r.kind.value == "wide"]
-    hit_oak = [
-        r for r in wide if r.cells and "36" in str(r.cells[0]) and "$2,719" in r.cells
-    ]
-    hit_walnut = [
-        r for r in wide if r.cells and "36" in str(r.cells[0]) and "$3,942" in str(r.cells)
-    ]
-    assert hit_oak, "Expected 36x48 Solid oak retail $2,719"
-    assert hit_walnut, "Expected 36x48 Solid walnut retail $3,942"
+def test_wholesale_columns_not_retail():
+    row = (
+        '36" X 48" ',
+        "Solid",
+        4,
+        357,
+        1006.74,
+        481.95,
+        1359.09,
+        464.1,
+        1308.76,
+        428.4,
+        1208.09,
+        517.65,
+        1459.77,
+    )
+    vals = wholesale_values_five_group(row)
+    assert vals == [357, 481.95, 464.1, 428.4, 517.65]
+    assert retail_from_wholesale(vals[0]) == "$964"
+    assert retail_from_wholesale(vals[-1]) == "$1,398"
 
 
-def test_is_country_view_oak_pdf():
-    if not PDF.is_file():
-        pytest.skip("upload missing")
-    assert is_country_view_oak_pdf(PDF)
+def test_country_view_oak_published_pdf_36x48_oak_964():
+    pdf = Path(__file__).resolve().parents[1] / "sheets" / "Country_View_Oak.pdf"
+    if not pdf.is_file():
+        pytest.skip("catalog PDF not built")
+    import pdfplumber
+
+    found = False
+    with pdfplumber.open(pdf) as doc:
+        for page in doc.pages:
+            for line in (page.extract_text() or "").split("\n"):
+                if '36" X 48"' in line and "Solid" in line and "$964" in line:
+                    found = True
+                    break
+    assert found, 'Expected 36" X 48" Solid oak $964 in sheets/Country_View_Oak.pdf'
+
+
+def test_marked_retail_divided_would_be_wrong_site():
+    """Builder retail col (×2.82) must not be used as wholesale."""
+    marked = 1006.74
+    implied_wholesale = marked / BUILDER_MARKUP
+    assert abs(implied_wholesale - 357) < 0.5
+    assert retail_whole_dollar(marked, MULTIPLIER_DEFAULT) == 2719
+
+
+@pytest.mark.skipif(not CVO_XLSX.is_file(), reason="Country View Oak workbook not on disk")
+def test_country_view_oak_workbook_detect():
+    assert is_country_view_oak_workbook(CVO_XLSX)
+
+
+@pytest.mark.skipif(not CVO_XLSX.is_file(), reason="Country View Oak workbook not on disk")
+def test_country_view_oak_36x48_solid_ci_guard():
+    rows, stats = process_country_view_oak_workbook(CVO_XLSX, multiplier=2.7)
+    assert stats["wide_rows"] > 500
+    spot = spot_check_36x48_solid(rows)
+    assert spot["oak"] == "$964"
+    assert spot["cherry"] == "$1,302"
+    assert spot["qshw"] == "$1,254"
+    assert spot["brown_maple_group"] == "$1,157"
+    assert spot["walnut"] == "$1,398"

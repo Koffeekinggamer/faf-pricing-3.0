@@ -144,9 +144,9 @@ def infer_from_source(
     sheet: str | None = None,
 ) -> date | None:
     """Best-effort price list date from a dealer upload (before full transform)."""
-    from scripts.country_view_oak_book import is_country_view_oak_pdf
+    from scripts.country_view_oak_book import is_country_view_oak_workbook
 
-    if is_country_view_oak_pdf(source):
+    if is_country_view_oak_workbook(source):
         return date(2025, 4, 15)
 
     stamped = mmyy_from_path(source)
