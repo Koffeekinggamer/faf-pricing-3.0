@@ -1,11 +1,11 @@
-"""Country View Oak finished wholesale PDF → retail ProcessedRows."""
+"""Country View Oak dealer workbook → retail ProcessedRows."""
 
 from __future__ import annotations
 
 import re
 from pathlib import Path
 
-import pdfplumber
+import openpyxl
 
 from scripts.dealer_book import ProcessedRow, RowKind, collapse_blank_rows
 from scripts.dealer_terms import is_dealer_terms_text
@@ -16,6 +16,10 @@ from scripts.retail_text import forbidden_phrases, sanitize_retail_text
 BUILDER = "Country View Oak"
 DOC_TITLE = "Country View Oak Retail Price List · April 15, 2025"
 MULTIPLIER_DEFAULT = 2.7
+BUILDER_MARKUP = 2.82  # wholesale × (1 + MARKUP!E28) on retail columns; never read those cols
+
+WHOLESALE_COLS = (4, 6, 8, 10, 12)  # D, F, H, J, L
+HEADER_WHOLESALE_COLS = WHOLESALE_COLS
 
 DROP_LINE_RE = re.compile(
     r"(?:"
@@ -30,25 +34,42 @@ DROP_LINE_RE = re.compile(
     re.I,
 )
 
-DOLLAR_RE = re.compile(
-    r"\$\s*(\d{1,3}(?:,\d{3})*)(?:\.(\d{2}))?"
-)
-
-TABLE_HEADER_RE = re.compile(r"item\s+leaves\s+legs", re.I)
+TABLE_HEADER_RE = re.compile(r"^item\s*$", re.I)
 
 SECTION_RE = re.compile(
     r"^(?:\d+\"\s+)?[A-Za-z0-9].*(?:"
     r"Tables|Beds|Chairs|Stools|Benches|Desks|Hutches|Servers|Cabinets|"
-    r"Bookcases|Chests|Mirrors|Racks|Gliders|Crates|Stands|Stools)"
+    r"Bookcases|Chests|Mirrors|Racks|Gliders|Crates|Stands)"
     r"(?:\s*\(cont\.\))?\s*$",
     re.I,
 )
 
 
+def is_country_view_oak_workbook(path: Path) -> bool:
+    if path.suffix.lower() not in {".xlsx", ".xlsm"}:
+        return False
+    try:
+        wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
+        try:
+            names = set(wb.sheetnames)
+            if "RETAIL" not in names or "MARKUP" not in names:
+                return False
+            sh = wb["RETAIL"]
+            a35 = sh.cell(35, 1).value
+            return isinstance(a35, str) and "finished price list" in a35.lower()
+        finally:
+            wb.close()
+    except Exception:
+        return False
+
+
 def is_country_view_oak_pdf(path: Path) -> bool:
+    """Legacy: builder PDF upload with finished list header (prefer workbook)."""
     if path.suffix.lower() != ".pdf":
         return False
     try:
+        import pdfplumber
+
         with pdfplumber.open(path) as pdf:
             if len(pdf.pages) < 80:
                 return False
@@ -62,128 +83,154 @@ def is_country_view_oak_pdf(path: Path) -> bool:
         return False
 
 
-def _wholesale_amounts(line: str) -> list[float]:
-    out: list[float] = []
-    for m in DOLLAR_RE.finditer(line):
-        whole = m.group(1).replace(",", "")
-        cents = m.group(2) or "00"
-        out.append(float(f"{whole}.{cents}"))
-    return out
-
-
-def _transform_price_line(line: str, multiplier: float) -> list[str]:
-    line = clean_pdf_plain_text(line)
-    if not line or "$" not in line:
-        return []
-    idx = line.index("$")
-    label = sanitize_retail_text(line[:idx].strip(), multiplier)
-    if not label and not _wholesale_amounts(line):
-        return []
-    cells: list[str] = []
-    if label:
-        cells.append(label)
-    for wholesale in _wholesale_amounts(line):
-        cells.append(f"${retail_whole_dollar(wholesale, multiplier):,}")
-    return cells if len(cells) > 1 or (cells and "$" in cells[-1]) else []
-
-
-def _transform_prose_line(line: str, multiplier: float) -> str:
-    line = clean_pdf_plain_text(line)
-    if DROP_LINE_RE.search(line) or is_dealer_terms_text(line):
+def _cell_str(v: object) -> str:
+    if v is None:
         return ""
-    line = re.sub(r"\bwholesale\b", "", line, flags=re.I)
-    line = re.sub(r"\s{2,}", " ", line).strip()
-    if not line:
-        return ""
-    if "$" in line:
-        line = transform_text_prices(line, multiplier)
-    return sanitize_retail_text(line, multiplier, allow_percent=True)
+    if isinstance(v, float) and v == int(v):
+        return str(int(v))
+    return str(v).strip()
 
 
-def extract_pdf_lines(path: Path) -> list[str]:
-    lines: list[str] = []
-    with pdfplumber.open(path) as pdf:
-        for page in pdf.pages:
-            text = page.extract_text() or ""
-            for raw in text.splitlines():
-                s = clean_pdf_plain_text(raw).strip()
-                if s:
-                    lines.append(s)
-    return lines
-
-
-def count_wholesale_dollars(lines: list[str]) -> int:
-    n = 0
-    for line in lines:
-        if DROP_LINE_RE.search(line):
-            continue
-        n += len(_wholesale_amounts(line))
+def _wholesale_number(v: object) -> float | None:
+    if not isinstance(v, (int, float)) or isinstance(v, bool):
+        return None
+    n = float(v)
+    if n <= 0:
+        return None
+    if n < 1:
+        return None
     return n
 
 
-def process_country_view_oak_pdf(
-    path: Path,
-    *,
-    multiplier: float = MULTIPLIER_DEFAULT,
-) -> tuple[list[ProcessedRow], dict]:
-    source_lines = extract_pdf_lines(path)
-    expected_dollars = count_wholesale_dollars(source_lines)
-    out: list[ProcessedRow] = [
-        ProcessedRow(RowKind.TITLE, [DOC_TITLE]),
+def sparse_wholesale_values(row_values: tuple[object, ...]) -> list[float]:
+    """Wholesale cells from D/F/H/J/L that are not a full five-group table row."""
+    idx = (3, 5, 7, 9, 11)
+    return [
+        n
+        for i in idx
+        if i < len(row_values) and (n := _wholesale_number(row_values[i])) is not None
     ]
-    output_dollars = 0
+
+
+def wholesale_values_five_group(row_values: tuple[object, ...]) -> list[float] | None:
+    """All five wood-group wholesales when this is a full price row."""
+    idx = [3, 5, 7, 9, 11]
+    nums: list[float] = []
+    for i in idx:
+        if i >= len(row_values):
+            return None
+        n = _wholesale_number(row_values[i])
+        if n is None:
+            return None
+        nums.append(n)
+    return nums
+
+
+def retail_from_wholesale(wholesale: float, multiplier: float = MULTIPLIER_DEFAULT) -> str:
+    return f"${retail_whole_dollar(wholesale, multiplier):,}"
+
+
+def row_label(row_values: tuple[object, ...]) -> str:
+    parts: list[str] = []
+    for i in range(3):
+        s = _cell_str(row_values[i] if i < len(row_values) else None)
+        if s:
+            parts.append(s)
+    return " ".join(parts)
+
+
+def _transform_prose(text: str, multiplier: float) -> str:
+    text = clean_pdf_plain_text(text)
+    if not text or DROP_LINE_RE.search(text) or is_dealer_terms_text(text):
+        return ""
+    text = re.sub(r"\bwholesale\b", "", text, flags=re.I)
+    text = re.sub(r"\s{2,}", " ", text).strip()
+    if not text:
+        return ""
+    if "$" in text:
+        text = transform_text_prices(text, multiplier)
+    return sanitize_retail_text(text, multiplier, allow_percent=True)
+
+
+def _rows_from_retail_sheet(sh, multiplier: float) -> list[ProcessedRow]:
+    out: list[ProcessedRow] = [ProcessedRow(RowKind.TITLE, [DOC_TITLE])]
     header_buf: list[str] = []
 
-    for line in source_lines:
-        if DROP_LINE_RE.search(line):
-            continue
-        if is_dealer_terms_text(line):
-            continue
-
-        amounts = _wholesale_amounts(line)
-        if amounts:
-            cells = _transform_price_line(line, multiplier)
-            if cells:
-                out.append(ProcessedRow(RowKind.WIDE, cells))
-                output_dollars += len(amounts)
-                header_buf = []
+    for r in range(1, sh.max_row + 1):
+        row = tuple(sh.cell(r, c).value for c in range(1, 14))
+        if not any(v is not None and str(v).strip() for v in row):
             continue
 
-        if TABLE_HEADER_RE.search(line):
-            header_buf.append(line)
-            combined = " — ".join(header_buf) if header_buf else line
-            hdr = sanitize_retail_text(combined, multiplier)
+        a = _cell_str(row[0])
+        b = _cell_str(row[1]) if len(row) > 1 else ""
+        joined = clean_pdf_plain_text(" ".join(x for x in (a, b) if x))
+
+        if DROP_LINE_RE.search(joined):
+            continue
+
+        five = wholesale_values_five_group(row)
+        sparse = sparse_wholesale_values(row) if five is None else None
+
+        if TABLE_HEADER_RE.match(a):
+            sub_parts = [a, _cell_str(row[1]), _cell_str(row[2])]
+            for ci in HEADER_WHOLESALE_COLS:
+                h = sh.cell(r, ci).value
+                if h:
+                    sub_parts.append(clean_pdf_plain_text(str(h).replace("\n", " ")))
+            hdr = sanitize_retail_text(" — ".join(p for p in sub_parts if p), multiplier)
             if hdr:
                 out.append(ProcessedRow(RowKind.SUBHEAD, [hdr]))
             header_buf = []
             continue
 
-        if SECTION_RE.match(line) and "$" not in line:
-            hdr = sanitize_retail_text(line, multiplier)
+        if five:
+            label = row_label(row)
+            cells = [label] if label else []
+            cells.extend(retail_from_wholesale(w, multiplier) for w in five)
+            if cells:
+                out.append(ProcessedRow(RowKind.WIDE, cells))
+            header_buf = []
+            continue
+
+        if sparse:
+            label = row_label(row) or joined
+            cells = [label]
+            cells.extend(retail_from_wholesale(w, multiplier) for w in sparse)
+            out.append(ProcessedRow(RowKind.WIDE, cells))
+            header_buf = []
+            continue
+
+        if SECTION_RE.match(a) and "$" not in joined:
+            hdr = sanitize_retail_text(a, multiplier)
             if hdr:
                 out.append(ProcessedRow(RowKind.SECTION, [hdr]))
             header_buf = []
             continue
 
-        low = line.lower()
-        if any(
-            x in low
-            for x in (
-                "brown maple",
-                "rustic cherry",
-                "cherry sap",
-                "wormy maple",
-                "white oak",
-                "walnut",
-                "number of",
+        low = joined.lower()
+        if (
+            any(
+                x in low
+                for x in (
+                    "brown maple",
+                    "rustic cherry",
+                    "cherry sap",
+                    "wormy maple",
+                    "white oak",
+                    "walnut",
+                    "number of",
+                )
             )
-        ) and "$" not in line:
-            header_buf.append(line)
+            and "$" not in joined
+        ):
+            header_buf.append(joined)
             continue
 
-        prose = _transform_prose_line(line, multiplier)
+        text = a or b
+        if not text and joined:
+            text = joined
+        prose = _transform_prose(text, multiplier)
         if prose:
-            output_dollars += len(_wholesale_amounts(line))
             if prose.lower().startswith("options"):
                 out.append(ProcessedRow(RowKind.SUBHEAD, [prose]))
             elif prose.lower().startswith("standard"):
@@ -191,19 +238,42 @@ def process_country_view_oak_pdf(
             else:
                 out.append(ProcessedRow(RowKind.PROSE, [prose]))
 
+    return out
+
+
+def process_country_view_oak_workbook(
+    path: Path,
+    *,
+    multiplier: float = MULTIPLIER_DEFAULT,
+) -> tuple[list[ProcessedRow], dict]:
+    wb = openpyxl.load_workbook(path, data_only=True)
+    try:
+        sh = wb["RETAIL"]
+        rows = _rows_from_retail_sheet(sh, multiplier)
+    finally:
+        wb.close()
+
+    price_rows = sum(1 for pr in rows if pr.kind == RowKind.WIDE)
+    dollar_cells = sum(
+        len([c for c in pr.cells if str(c).startswith("$")]) for pr in rows if pr.kind == RowKind.WIDE
+    )
     stats = {
-        "source_lines": len(source_lines),
-        "expected_wholesale_dollars": expected_dollars,
-        "output_wholesale_dollars": output_dollars,
-        "dollar_parity": expected_dollars == output_dollars,
+        "processed_rows": len(rows),
+        "wide_rows": price_rows,
+        "retail_dollar_cells": dollar_cells,
     }
-    if not stats["dollar_parity"]:
-        raise ValueError(
-            f"Country View Oak extraction mismatch: "
-            f"expected {expected_dollars} wholesale dollar cells, "
-            f"transformed {output_dollars}"
-        )
-    return collapse_blank_rows(out), stats
+    return collapse_blank_rows(rows), stats
+
+
+def process_country_view_oak_pdf(
+    path: Path,
+    *,
+    multiplier: float = MULTIPLIER_DEFAULT,
+) -> tuple[list[ProcessedRow], dict]:
+    raise ValueError(
+        "Country View Oak must be imported from the .xlsx workbook "
+        "(RETAIL wholesale columns D/F/H/J/L), not the builder PDF."
+    )
 
 
 def country_view_oak_forbidden(rows: list[ProcessedRow]) -> list[str]:
@@ -214,3 +284,17 @@ def country_view_oak_forbidden(rows: list[ProcessedRow]) -> list[str]:
             if is_dealer_terms_text(str(c)):
                 bad.append(str(c))
     return bad
+
+
+def spot_check_36x48_solid(rows: list[ProcessedRow]) -> dict[str, str]:
+    """Map wood group column index → site retail for 36x48 Solid row."""
+    for pr in rows:
+        if pr.kind != RowKind.WIDE or not pr.cells:
+            continue
+        label = str(pr.cells[0])
+        if "36" in label and "48" in label and "solid" in label.lower():
+            prices = [c for c in pr.cells[1:] if str(c).startswith("$")]
+            if len(prices) >= 5:
+                names = ("oak", "cherry", "qshw", "brown_maple_group", "walnut")
+                return dict(zip(names, prices, strict=True))
+    raise AssertionError('36" X 48" Solid row not found in output')
