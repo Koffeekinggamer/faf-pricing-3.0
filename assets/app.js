@@ -98,13 +98,6 @@
     date.textContent = formatDate(b.updated);
     meta.appendChild(date);
 
-    if (b.note) {
-      var note = document.createElement("span");
-      note.className = "ps-note";
-      note.textContent = b.note;
-      meta.appendChild(note);
-    }
-
     main.appendChild(name);
     main.appendChild(meta);
 
