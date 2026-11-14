@@ -14,13 +14,20 @@ from scripts.country_view_oak_book import (
 )
 from scripts.pricing_lib import retail_whole_dollar
 
+_REPO_ROOT = Path(__file__).resolve().parents[1]
 CVO_XLSX = Path(
     os.environ.get(
         "CVO_WORKBOOK",
-        "/home/ubuntu/.cursor/projects/workspace/uploads/"
-        "Country_View_Oak_April2025_fb1d.xlsx",
+        str(_REPO_ROOT / "uploads" / "Country_View_Oak_April2025_fb1d.xlsx"),
     )
 )
+
+
+def _cvo_workbook_available() -> bool:
+    try:
+        return CVO_XLSX.is_file()
+    except OSError:
+        return False
 
 
 def test_oak_36x48_solid_site_price_from_wholesale():
@@ -74,12 +81,12 @@ def test_marked_retail_divided_would_be_wrong_site():
     assert retail_whole_dollar(marked, MULTIPLIER_DEFAULT) == 2719
 
 
-@pytest.mark.skipif(not CVO_XLSX.is_file(), reason="Country View Oak workbook not on disk")
+@pytest.mark.skipif(not _cvo_workbook_available(), reason="Country View Oak workbook not on disk")
 def test_country_view_oak_workbook_detect():
     assert is_country_view_oak_workbook(CVO_XLSX)
 
 
-@pytest.mark.skipif(not CVO_XLSX.is_file(), reason="Country View Oak workbook not on disk")
+@pytest.mark.skipif(not _cvo_workbook_available(), reason="Country View Oak workbook not on disk")
 def test_country_view_oak_36x48_solid_ci_guard():
     rows, stats = process_country_view_oak_workbook(CVO_XLSX, multiplier=2.7)
     assert stats["wide_rows"] > 500
