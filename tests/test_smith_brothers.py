@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import pdfplumber
 import pytest
 
 from scripts.pricing_lib import retail_whole_dollar
@@ -33,7 +34,11 @@ def test_smith_brothers_spot_prices():
 
 @pytest.mark.skipif(not CATALOG.is_file(), reason="Smith Brothers catalog PDF not built")
 def test_smith_brothers_page_count():
-    import pdfplumber
-
     with pdfplumber.open(CATALOG) as pdf:
         assert len(pdf.pages) >= 150
+
+
+@pytest.mark.skipif(not CATALOG.is_file(), reason="Smith Brothers catalog PDF not built")
+def test_smith_brothers_pages_rotated_ninety_clockwise():
+    with pdfplumber.open(CATALOG) as pdf:
+        assert all((p.rotation or 0) % 360 == 90 for p in pdf.pages)
