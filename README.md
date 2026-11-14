@@ -63,6 +63,14 @@ Backfill stored dates from existing retail PDF titles:
 python scripts/backfill_price_list_dates.py --write
 ```
 
+### Retail pass-through (Smith Brothers)
+
+Some builders ship **already-retail** FAF customer books (`multiplier` **1.0**, listed in `data/retail_passthrough.json`). Re-import with:
+
+```bash
+python scripts/import_smith_brothers.py path/to/book.pdf   # or several part PDFs
+```
+
 ## Repository layout
 
 | Path | Purpose |

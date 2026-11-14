@@ -229,6 +229,13 @@
     "updated": "2026-11-12"
   },
   {
+    "name": "Smith Brothers",
+    "pdf": "sheets/Smith_Brothers.pdf",
+    "updated": "2026-11-14",
+    "note": "FAF retail pass-through (multiplier 1.0)",
+    "price_list_date": "2026-01-12"
+  },
+  {
     "name": "Townline Furniture",
     "pdf": "sheets/Townline_Furniture.pdf",
     "updated": "2026-11-12",
