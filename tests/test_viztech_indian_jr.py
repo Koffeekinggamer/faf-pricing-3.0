@@ -6,9 +6,17 @@ from scripts.indian_trail_book import process_indian_trail_workbook
 from scripts.jr_woodworking_book import process_jr_woodworking_workbook
 from scripts.pricing_lib import retail_whole_dollar
 
-UPLOAD = Path("/home/ubuntu/.cursor/projects/workspace/uploads")
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+UPLOAD = _REPO_ROOT / "uploads"
 IT_XLSX = UPLOAD / "Indian_Trail_2026_648127_aff1.xlsx"
 JR_XLSX = UPLOAD / "J_and_R_2026_306462_e390.xlsx"
+
+
+def _upload_available(path: Path) -> bool:
+    try:
+        return path.is_file()
+    except OSError:
+        return False
 
 IT_PDF = Path(__file__).resolve().parents[1] / "sheets" / "Indian_Trail_Furniture.pdf"
 JR_PDF = Path(__file__).resolve().parents[1] / "sheets" / "J_R_Woodworking.pdf"
@@ -20,7 +28,7 @@ def test_retail_from_wholesale_spots():
     assert retail_whole_dollar(1012, 2.7) == 2733
 
 
-@pytest.mark.skipif(not IT_XLSX.is_file(), reason="Indian Trail upload missing")
+@pytest.mark.skipif(not _upload_available(IT_XLSX), reason="Indian Trail upload missing")
 def test_indian_trail_wholesale_finished_only():
     res = process_indian_trail_workbook(IT_XLSX, multiplier=2.7)
     assert not res.warnings or res.rows
@@ -32,7 +40,7 @@ def test_indian_trail_wholesale_finished_only():
     )
 
 
-@pytest.mark.skipif(not JR_XLSX.is_file(), reason="J&R upload missing")
+@pytest.mark.skipif(not _upload_available(JR_XLSX), reason="J&R upload missing")
 def test_jr_wholesale_finished_only():
     res = process_jr_woodworking_workbook(JR_XLSX, multiplier=2.7)
     texts = " ".join(str(c) for pr in res.rows for c in pr.cells)
