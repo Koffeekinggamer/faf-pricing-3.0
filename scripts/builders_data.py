@@ -16,6 +16,23 @@ def sort_key(name: str) -> str:
     return trimmed.casefold()
 
 
+FORBIDDEN_INDEX_NOTE_RE = re.compile(
+    r"pass[- ]?through|\bmultiplier\b",
+    re.I,
+)
+
+
+def validate_index_note(note: str | None) -> None:
+    """Reject index labels that expose multiplier / pass-through wording to sales."""
+    if not note:
+        return
+    if FORBIDDEN_INDEX_NOTE_RE.search(note):
+        raise ValueError(
+            "Index notes must not mention pass-through or multiplier "
+            "(multipliers stay in data/multipliers.json only)"
+        )
+
+
 def slugify(name: str) -> str:
     base = re.sub(r"[^a-zA-Z0-9]+", "_", name.strip()).strip("_")
     return base or "builder"
@@ -60,6 +77,7 @@ def upsert_builder(
     path: Path | None = None,
 ) -> tuple[dict, bool]:
     """Insert or replace builder by name (case-insensitive). Returns (entry, replaced)."""
+    validate_index_note(note)
     builders = load_builders(path)
     key = sort_key(name)
     replaced = False

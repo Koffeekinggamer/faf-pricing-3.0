@@ -111,7 +111,6 @@ def main() -> int:
         BUILDER,
         rel_pdf,
         args.date,
-        note="FAF retail pass-through (multiplier 1.0)",
         price_list_date=args.price_list_date,
     )
     set_stored_multiplier(BUILDER, MULTIPLIER)

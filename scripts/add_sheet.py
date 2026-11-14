@@ -17,7 +17,13 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from scripts.builders_data import REPO_ROOT as ROOT, find_builder_by_name, slugify, upsert_builder
+from scripts.builders_data import (
+    REPO_ROOT as ROOT,
+    find_builder_by_name,
+    slugify,
+    upsert_builder,
+    validate_index_note,
+)
 from scripts.price_list_date import (
     evaluate_price_list_update,
     infer_from_source,
@@ -170,6 +176,11 @@ def main() -> int:
         return 1
 
     assert_no_approx(builder_name, args.note or "")
+    try:
+        validate_index_note(args.note)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
 
     existing = find_builder_by_name(builder_name)
     if args.price_list_date:
