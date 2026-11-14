@@ -187,5 +187,31 @@ def infer_from_source(
     return None
 
 
+_MONTH_IN_NAME = re.compile(
+    rf"\b({_MONTH})\b[^\d]{{0,40}}(20\d{{2}})|(20\d{{2}})[^\d]{{0,40}}\b({_MONTH})\b",
+    re.I,
+)
+_YEAR_IN_UPLOAD = re.compile(r"[_\s.](20\d{2})[_\s.]", re.I)
+
+
+def _price_list_date_from_upload_name(path: Path) -> date | None:
+    m = _MONTH_IN_NAME.search(path.name)
+    if m:
+        if m.group(1):
+            month, year_s = m.group(1), m.group(2)
+        else:
+            month, year_s = m.group(4), m.group(3)
+        if month and year_s:
+            return _month_day_year(month, 1, int(year_s))
+    m = _YEAR_IN_UPLOAD.search(path.name)
+    if m:
+        return date(int(m.group(1)), 1, 1)
+    return None
+
+
 def infer_for_viztech_files(files: list[Path]) -> date | None:
-    return max_price_list_date([mmyy_from_path(p) for p in files])
+    dates: list[date | None] = []
+    for p in files:
+        dates.append(mmyy_from_path(p))
+        dates.append(_price_list_date_from_upload_name(p))
+    return max_price_list_date(dates)

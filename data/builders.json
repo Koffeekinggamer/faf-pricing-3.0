@@ -144,6 +144,18 @@
     "updated": "2026-11-12"
   },
   {
+    "name": "Criswell Furniture",
+    "pdf": "sheets/Criswell_Furniture.pdf",
+    "updated": "2026-11-14",
+    "price_list_date": "2026-10-01"
+  },
+  {
+    "name": "Crystal Valley Hardwoods",
+    "pdf": "sheets/Crystal_Valley_Hardwoods.pdf",
+    "updated": "2026-11-14",
+    "price_list_date": "2026-03-01"
+  },
+  {
     "name": "Curveside Wood Products",
     "pdf": "sheets/Curveside_Wood_Products.pdf",
     "updated": "2026-11-12"
@@ -164,9 +176,27 @@
     "updated": "2026-11-12"
   },
   {
+    "name": "Dry Creek Furniture",
+    "pdf": "sheets/Dry_Creek_Furniture.pdf",
+    "updated": "2026-11-14",
+    "price_list_date": "2026-03-01"
+  },
+  {
     "name": "Dutch Boy Poly",
     "pdf": "sheets/Dutch_Boy_Poly.pdf",
     "updated": "2026-11-12"
+  },
+  {
+    "name": "Dutch Creek Design",
+    "pdf": "sheets/Dutch_Creek_Design.pdf",
+    "updated": "2026-11-14",
+    "price_list_date": "2026-01-01"
+  },
+  {
+    "name": "Dutch Homestead",
+    "pdf": "sheets/Dutch_Homestead.pdf",
+    "updated": "2026-11-14",
+    "price_list_date": "2026-06-01"
   },
   {
     "name": "Ebony Woodworking",
