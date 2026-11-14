@@ -107,6 +107,8 @@ def _cell_para(text: str, style: ParagraphStyle) -> Paragraph:
     t = (text or "").strip()
     if not t or dash_or_empty(t):
         t = "—"
+    if re.match(r"^[A-Za-z0-9][A-Za-z0-9\s/&\-']+$", t) and len(t) <= 32 and " " in t:
+        t = t.replace(" ", "\u00a0")
     return Paragraph(escape_for_paragraph_markup(t), style)
 
 
