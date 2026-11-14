@@ -8,6 +8,26 @@ from pathlib import Path
 from scripts.builders_data import REPO_ROOT, sort_key
 
 MULTIPLIERS_PATH = REPO_ROOT / "data" / "multipliers.json"
+PASSTHROUGH_PATH = REPO_ROOT / "data" / "retail_passthrough.json"
+
+
+def load_passthrough_builders(path: Path | None = None) -> frozenset[str]:
+    path = path or PASSTHROUGH_PATH
+    if not path.exists():
+        return frozenset()
+    with path.open(encoding="utf-8") as f:
+        data = json.load(f)
+    if not isinstance(data, list):
+        raise ValueError(f"{path} must contain a JSON array of builder names")
+    return frozenset(str(x) for x in data)
+
+
+def is_retail_passthrough(name: str, path: Path | None = None) -> bool:
+    key = sort_key(name)
+    for b in load_passthrough_builders(path):
+        if sort_key(b) == key:
+            return True
+    return False
 
 
 def load_multipliers(path: Path | None = None) -> dict[str, float]:
@@ -68,6 +88,15 @@ def resolve_multiplier(
 ) -> tuple[float, bool]:
     """Return (multiplier to use, should_persist). Raises ValueError on policy violations."""
     stored = get_stored_multiplier(builder_name, path)
+    passthrough = is_retail_passthrough(builder_name)
+
+    if passthrough:
+        if multiplier is not None and abs(multiplier - 1.0) > 1e-9 and not override:
+            raise ValueError(
+                f"{builder_name!r} is retail pass-through (multiplier 1.0). "
+                "Omit --multiplier or pass 1.0."
+            )
+        return 1.0, stored is None or abs((stored or 0) - 1.0) > 1e-9
 
     if multiplier is None:
         if stored is None:

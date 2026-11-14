@@ -2,6 +2,7 @@ import pytest
 
 from scripts.multipliers_data import (
     get_stored_multiplier,
+    is_retail_passthrough,
     load_multipliers,
     resolve_multiplier,
     set_stored_multiplier,
@@ -32,6 +33,20 @@ def test_resolve_mismatch_requires_override(tmp_path):
     assert persist is True
 
 
+def test_passthrough_builder_locked_at_one(tmp_path, monkeypatch):
+    mpath = tmp_path / "multipliers.json"
+    ppath = tmp_path / "retail_passthrough.json"
+    monkeypatch.setattr("scripts.multipliers_data.PASSTHROUGH_PATH", ppath)
+    ppath.write_text('["Pass Through Co"]', encoding="utf-8")
+    set_stored_multiplier("Pass Through Co", 1.0, path=mpath)
+    mult, persist = resolve_multiplier(
+        "Pass Through Co", None, override=False, path=mpath
+    )
+    assert mult == 1.0
+    assert persist is False
+    assert is_retail_passthrough("Pass Through Co")
+
+
 def test_first_add_persists_multiplier(tmp_path):
     path = tmp_path / "multipliers.json"
     mult, persist = resolve_multiplier("First Co", 2.7, override=False, path=path)
@@ -49,4 +64,8 @@ def test_backfill_matches_builders_json():
     m = load_multipliers(MULTIPLIERS_PATH)
     names = {b["name"] for b in builders}
     assert set(m.keys()) == names
-    assert all(v == 2.7 for v in m.values())
+    for name, mult in m.items():
+        if name == "Smith Brothers":
+            assert mult == 1.0
+        else:
+            assert mult == 2.7
