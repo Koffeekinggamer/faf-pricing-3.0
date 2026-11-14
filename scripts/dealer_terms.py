@@ -73,7 +73,10 @@ FINANCE_BILLING_RE = re.compile(
     r"past\s+due|"
     r"(?:past\s+due|more\s+than)\s+\d+\s+days?|"
     r"\binvoices?\b.*(?:past\s+due|\d+\s+days?)|"
-    r"\b\d+\s*%\s+finance"
+    r"\b\d+\s*%\s*finance|"
+    r"\bdiscount\b.*\b(?:payment|received|days)\b|"
+    r"\bpicked\s+up\b.*\d+\s+days?\b|"
+    r"\bconsidered\s+stock\b"
     r")",
     re.I,
 )

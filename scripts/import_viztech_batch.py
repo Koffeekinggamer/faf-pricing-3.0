@@ -35,6 +35,11 @@ def main() -> int:
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--sources", type=Path, required=True, help="Directory with workbook files")
     parser.add_argument("--date", default=date.today().isoformat())
+    parser.add_argument(
+        "--force-replace",
+        action="store_true",
+        help="Replace existing PDF even when price list date is not newer",
+    )
     args = parser.parse_args()
 
     sources = args.sources.resolve()
@@ -71,6 +76,9 @@ def main() -> int:
         incoming_pld = infer_for_viztech_files(files)
         existing = find_builder_by_name(builder_name)
         allow, pld_reason = evaluate_price_list_update(existing, incoming_pld)
+        if args.force_replace and existing:
+            allow = True
+            pld_reason = "forced replace"
         if not allow:
             report["skipped"].append({"builder": builder_name, "reason": pld_reason})
             continue

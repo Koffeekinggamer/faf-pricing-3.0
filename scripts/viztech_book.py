@@ -51,8 +51,28 @@ def file_mmyy(path: Path) -> int:
     return int(m.group(1)) * 100 + int(m.group(2))
 
 
+def _section_label_from_upload_name(path: Path) -> str | None:
+    """Viztech upload names: builder-slug__CODE_2026_Section_Pricelist_…"""
+    m = re.search(r"__\w+_\d{4}_(.+?)_Pricelist", path.name, re.I)
+    if not m:
+        return None
+    raw = m.group(1).replace("_", " ")
+    raw = re.sub(r"\bevry\b", "Every", raw, flags=re.I)
+    raw = re.sub(r"([a-z])([A-Z])", r"\1 \2", raw)
+    words: list[str] = []
+    for w in raw.split():
+        if w.lower() in {"for", "and", "of", "the"}:
+            words.append(w.lower())
+        else:
+            words.append(w[:1].upper() + w[1:] if w else w)
+    return " ".join(words).strip() or None
+
+
 def section_title_from_path(path: Path) -> str:
     fname = path.name
+    from_upload = _section_label_from_upload_name(path)
+    if from_upload:
+        return from_upload
     if re.search(r"buckeye-rockers__AL_", fname, re.I):
         return "Authentex"
     if re.search(r"buckeye-rockers__BR_", fname, re.I):
@@ -168,6 +188,13 @@ def _drop_row(row: list, joined: str) -> bool:
             "std. terms",
             "std terms",
         )
+    ):
+        return True
+    if re.search(
+        r"\bdiscount\b.*\b(?:payment|received|days)\b|\bpicked\s+up\b.*\d+\s+days\b|"
+        r"\bconsidered\s+stock\b|instructions\s*-\s*please\s+read|\d+\s*%\s*discount\b",
+        joined,
+        re.I,
     ):
         return True
     if "wholesale price list" in low or re.match(r"^finished\s+wholesale\s*$", low):
@@ -292,7 +319,11 @@ def _process_sheet(
 ) -> list[ProcessedRow]:
     out: list[ProcessedRow] = []
     clean_name = sanitize_retail_text(name.replace("_", " "), multiplier) or name
-    if clean_name.strip().lower() not in ("wholesale", "finished wholesale"):
+    if clean_name.strip().lower() in ("terms", "markup", "cover", "backcover") or re.search(
+        r"\bmark-?up\b", clean_name, re.I
+    ):
+        pass
+    elif clean_name.strip().lower() not in ("wholesale", "finished wholesale"):
         out.append(ProcessedRow(RowKind.SUBHEAD, [clean_name]))
     item_hint = ""
     i = 0
@@ -338,7 +369,7 @@ def _process_sheet(
                 prose_cells.append(t)
         if prose_cells and len(" ".join(prose_cells)) > 40 and not any(
             is_builder_contact_text(c) for c in prose_cells
-        ):
+        ) and not any(is_dealer_terms_text(c) for c in prose_cells):
             out.append(ProcessedRow(RowKind.PROSE, prose_cells[:4]))
         i += 1
     return out

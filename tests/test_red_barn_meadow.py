@@ -46,8 +46,9 @@ def _upload_fixture(path: Path) -> bool:
 
 
 def test_red_barn_and_meadow_forbidden(tmp_path_factory):
-    rb = Path("/home/ubuntu/.cursor/projects/workspace/uploads/Red_Barn_739a.zip")
-    mw = Path("/home/ubuntu/.cursor/projects/workspace/uploads/Meadow_Wood_fe17.xlsx")
+    upload = Path(__file__).resolve().parents[1] / "uploads"
+    rb = upload / "Red_Barn_739a.zip"
+    mw = upload / "Meadow_Wood_fe17.xlsx"
     if not _upload_fixture(rb) or not _upload_fixture(mw):
         return
     for proc, forbidden in (
