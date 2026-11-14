@@ -196,6 +196,17 @@
     "updated": "2026-11-12"
   },
   {
+    "name": "Indian Trail Furniture",
+    "pdf": "sheets/Indian_Trail_Furniture.pdf",
+    "updated": "2026-11-14",
+    "price_list_date": "2026-01-01"
+  },
+  {
+    "name": "J&R Woodworking",
+    "pdf": "sheets/J_R_Woodworking.pdf",
+    "updated": "2026-11-14"
+  },
+  {
     "name": "J. Troyer and Co",
     "pdf": "sheets/J_Troyer_and_Co.pdf",
     "updated": "2026-11-12"
