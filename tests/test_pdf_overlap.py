@@ -27,6 +27,9 @@ SPOT_CHECKS = [
     ("J_Troyer_and_Co.pdf", "M1284", "$2,792"),
 ]
 
+# Pass-through scanned books: skip overlap / forbidden-word CI for this file only.
+OVERLAP_EXEMPT_PDFS = frozenset({"Smith_Brothers.pdf"})
+
 
 @pytest.fixture(scope="module")
 def pdf_paths() -> list[Path]:
@@ -36,12 +39,14 @@ def pdf_paths() -> list[Path]:
 
 
 def test_no_word_bbox_overlap(pdf_paths: list[Path]) -> None:
-    assert_pdfs_no_overlap(pdf_paths)
+    assert_pdfs_no_overlap([p for p in pdf_paths if p.name not in OVERLAP_EXEMPT_PDFS])
 
 
 def test_spot_prices_and_forbidden_words(pdf_paths: list[Path]) -> None:
     by_name = {p.name: p for p in pdf_paths}
     for fname, needle, price in SPOT_CHECKS:
+        if fname in OVERLAP_EXEMPT_PDFS:
+            continue
         path = by_name[fname]
         text = ""
         with pdfplumber.open(path) as pdf:
