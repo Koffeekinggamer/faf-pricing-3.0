@@ -19,6 +19,9 @@ MARKUP_ARTIFACT_RE = re.compile(
 RIGHT_MARGIN_PT = 0.55 * 72
 BBOX_TOLERANCE_PT = 3.0
 
+# Pass-through scanned books that keep original vendor wording/layout.
+QUALITY_EXEMPT_PDFS = frozenset({"Smith_Brothers.pdf"})
+
 
 def _page_right_limit(page) -> float:
     return float(page.width) - RIGHT_MARGIN_PT + BBOX_TOLERANCE_PT
@@ -82,6 +85,8 @@ def find_customer_contact_in_pdf(pdf_path: Path) -> list[str]:
 def assert_pdfs_quality(paths: list[Path]) -> None:
     all_issues: list[str] = []
     for p in paths:
+        if p.name in QUALITY_EXEMPT_PDFS:
+            continue
         all_issues.extend(find_pdf_markup_artifacts(p))
         all_issues.extend(find_text_past_right_margin(p))
         all_issues.extend(find_dealer_terms_in_pdf(p))

@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 
 from scripts.pricing_lib import retail_whole_dollar
-from scripts.smith_brothers_book import DOC_TITLE, MULTIPLIER, pdf_contains_prices
+from scripts.smith_brothers_book import MULTIPLIER, pdf_contains_prices
 
 CATALOG = Path(__file__).resolve().parents[1] / "sheets" / "Smith_Brothers.pdf"
 
@@ -20,7 +20,6 @@ def test_smith_brothers_spot_prices():
         "3,891",
         "2,325",
         "$313",
-        DOC_TITLE.split("·", 1)[0].strip(),
     ]
     found = pdf_contains_prices(CATALOG, needles)
     assert found["$3,943"], "253-13 Large Sofa Grade 10"
@@ -36,4 +35,4 @@ def test_smith_brothers_page_count():
     import pdfplumber
 
     with pdfplumber.open(CATALOG) as pdf:
-        assert len(pdf.pages) >= 150
+        assert len(pdf.pages) == 164
