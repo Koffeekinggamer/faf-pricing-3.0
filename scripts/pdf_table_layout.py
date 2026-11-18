@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 
 from reportlab.lib import colors
-from reportlab.lib.enums import TA_LEFT
+from reportlab.lib.enums import TA_CENTER, TA_LEFT
 from reportlab.lib.units import inch
 from reportlab.lib.styles import ParagraphStyle
 
@@ -61,6 +61,19 @@ def _prefix_column_count(rows: list[list[str]]) -> int:
     ncol = max(len(r) for r in rows)
     if ncol <= 3:
         return 1
+    # Prefer header labels when present (Item # / Description, Size / Leaf)
+    h0 = (rows[0][0] or "").strip().lower() if rows[0] else ""
+    h1 = (rows[0][1] or "").strip().lower() if len(rows[0]) > 1 else ""
+    if h0 in {"item #", "item", "size", "order #", "sku"} and h1 in {
+        "description",
+        "leaf / top",
+        "desc",
+        "product",
+        "size",
+    }:
+        return 2
+    if h0 == "size" and "leaf" in h1:
+        return 2
     second_labels = {r[1].strip() for r in rows if len(r) > 1 and r[1].strip()}
     if second_labels and all(
         len(s) <= 12 and not PRICE_RE.match(s) for s in second_labels
@@ -77,30 +90,51 @@ def _natural_col_widths(
     for row in rows:
         for j, cell in enumerate(row):
             text = (cell or "").strip() or " "
-            w = stringWidth(text, font_name, font_size) + 8
+            # Width from first line only so multi-line wood headers don't inflate columns
+            first_line = text.split("\n", 1)[0]
+            w = stringWidth(first_line, font_name, font_size) + 8
             if PRICE_RE.match(text):
                 w = max(w, 0.55 * inch)
             elif j == 0:
-                w = max(w, 0.85 * inch)
+                w = max(w, 0.9 * inch)
             elif j < 2:
-                w = max(w, 0.52 * inch)
+                # Keep "Description" readable (never clip to Descriptio/n)
+                w = max(w, stringWidth("Description", font_name, font_size) + 10)
+                w = max(w, 0.95 * inch)
             else:
-                w = max(w, 0.45 * inch)
-            widths[j] = max(widths[j], min(w, 2.2 * inch))
+                w = max(w, 0.48 * inch)
+            widths[j] = max(widths[j], min(w, 2.0 * inch))
     return widths
 
 
-def _scale_widths(widths: list[float], target: float, *, floor: float) -> list[float]:
+def _scale_widths(
+    widths: list[float],
+    target: float,
+    *,
+    floor: float,
+    protect: int = 0,
+) -> list[float]:
+    """Scale columns to fit target; optionally protect the first `protect` columns."""
     total = sum(widths)
     if total <= target or total <= 0:
         return widths
-    factor = target / total
-    scaled = [max(w * factor, floor) for w in widths]
-    total2 = sum(scaled)
-    if total2 > target:
-        factor2 = target / total2
-        scaled = [max(w * factor2, floor * 0.92) for w in scaled]
-    return scaled
+    protected = list(widths[:protect])
+    rest = list(widths[protect:])
+    rest_target = max(target - sum(protected), floor * max(len(rest), 1))
+    if not rest:
+        return widths
+    rest_total = sum(rest)
+    if rest_total <= rest_target:
+        return widths
+    factor = rest_target / rest_total
+    scaled_rest = [max(w * factor, floor) for w in rest]
+    total2 = sum(protected) + sum(scaled_rest)
+    if total2 > target and rest:
+        overflow = total2 - target
+        # Shrink rest a bit more
+        shrink = (sum(scaled_rest) - overflow) / sum(scaled_rest)
+        scaled_rest = [max(w * shrink, floor * 0.9) for w in scaled_rest]
+    return protected + scaled_rest
 
 
 def _cell_para(text: str, style: ParagraphStyle) -> Paragraph:
@@ -108,6 +142,32 @@ def _cell_para(text: str, style: ParagraphStyle) -> Paragraph:
     if not t or dash_or_empty(t):
         t = "—"
     return Paragraph(escape_for_paragraph_markup(t), style)
+
+
+_PREFIX_HEADER_LABELS = frozenset(
+    {
+        "item #",
+        "item",
+        "description",
+        "size",
+        "leaf / top",
+        "price",
+        "order #",
+        "sku",
+        "desc",
+        "product",
+    }
+)
+
+
+def _stack_multiword_wood_header(cell: str) -> str:
+    """Prefer wrapping wood names at spaces (RUSTIC\\nWALNUT), not mid-word."""
+    t = (cell or "").strip()
+    if not t or "\n" in t or " " not in t:
+        return t
+    if t.lower() in _PREFIX_HEADER_LABELS or "/" in t:
+        return t
+    return "\n".join(t.split())
 
 
 def _table_style(header_rows: int, font_size: float) -> TableStyle:
@@ -227,6 +287,8 @@ def wide_table_flowables(
     raw_rows: list[list[str]],
     *,
     body_style: ParagraphStyle,
+    section_title: str | None = None,
+    lock_landscape: bool = False,
 ) -> list:
     rows = prune_empty_columns([[str(c) for c in r] for r in raw_rows])
     rows = [
@@ -237,8 +299,17 @@ def wide_table_flowables(
     if not rows:
         return []
 
-    header_rows = 1 if _row_looks_like_header(rows[0]) else 0
-    prefix = _prefix_column_count(rows)
+    col_header_rows = 1 if _row_looks_like_header(rows[0]) else 0
+    # Optional collection title row that repeats with column headers on every page
+    title_rows = 0
+    if section_title and section_title.strip():
+        ncol0 = max(len(r) for r in rows)
+        title_row = [section_title.strip()] + [""] * (ncol0 - 1)
+        rows = [title_row] + rows
+        title_rows = 1
+    header_rows = title_rows + col_header_rows
+
+    prefix = _prefix_column_count(rows[title_rows:] if title_rows else rows)
     font_size = DEFAULT_FONT_PT
     font_name = body_style.fontName
 
@@ -257,62 +328,133 @@ def wide_table_flowables(
         fontSize=font_size,
         leading=font_size + 1.5,
     )
+    title_cell_style = ParagraphStyle(
+        "wideTitleCell",
+        parent=header_cell_style,
+        fontSize=font_size + 1,
+        leading=font_size + 2.5,
+        alignment=TA_CENTER,
+    )
 
-    widths = _natural_col_widths(rows, font_name, font_size)
+    # Prefer space-wrap on multi-word wood headers (avoid RUSTIC WALNU/T)
+    if col_header_rows:
+        hdr_i = title_rows
+        hdr = list(rows[hdr_i])
+        for j in range(prefix, len(hdr)):
+            hdr[j] = _stack_multiword_wood_header(hdr[j])
+        rows[hdr_i] = hdr
+
+    # Never break header words mid-glyph when a column is tight
+    header_cell_style.splitLongWords = 0
+
+    # Measure widths from column-header + body (ignore title row)
+    measure_rows = rows[title_rows:] if title_rows else rows
+    widths = _natural_col_widths(measure_rows, font_name, font_size)
     total = sum(widths)
-    usable = PORTRAIT_USABLE
-    need_landscape = total > usable
-    if need_landscape:
+    ncol = max(len(r) for r in rows)
+    if lock_landscape:
         usable = LANDSCAPE_USABLE
+        need_landscape = False
         while total > usable and font_size > MIN_FONT_PT:
             font_size -= 0.5
             cell_style.fontSize = font_size
             cell_style.leading = font_size + 1.5
             header_cell_style.fontSize = font_size
-            widths = _natural_col_widths(rows, font_name, font_size)
+            header_cell_style.leading = font_size + 1.5
+            title_cell_style.fontSize = font_size + 1
+            title_cell_style.leading = font_size + 2.5
+            widths = _natural_col_widths(measure_rows, font_name, font_size)
             total = sum(widths)
+    else:
+        usable = PORTRAIT_USABLE
+        need_landscape = total > usable or ncol >= 7
+        if need_landscape:
+            usable = LANDSCAPE_USABLE
+            while total > usable and font_size > MIN_FONT_PT:
+                font_size -= 0.5
+                cell_style.fontSize = font_size
+                cell_style.leading = font_size + 1.5
+                header_cell_style.fontSize = font_size
+                header_cell_style.leading = font_size + 1.5
+                title_cell_style.fontSize = font_size + 1
+                title_cell_style.leading = font_size + 2.5
+                widths = _natural_col_widths(measure_rows, font_name, font_size)
+                total = sum(widths)
 
     flow: list = []
 
     def append_table(sub_rows: list[list[str]], col_widths: list[float]) -> None:
         data = []
         for ri, row in enumerate(sub_rows):
-            st = header_cell_style if ri < header_rows else cell_style
+            if title_rows and ri == 0:
+                st = title_cell_style
+            elif ri < header_rows:
+                st = header_cell_style
+            else:
+                st = cell_style
             data.append([_cell_para(c, st) for c in row])
         tbl = Table(data, colWidths=col_widths, repeatRows=header_rows)
-        tbl.setStyle(_table_style(header_rows, font_size))
+        style = _table_style(header_rows, font_size)
+        if title_rows:
+            style.add("SPAN", (0, 0), (-1, 0))
+            style.add("ALIGN", (0, 0), (-1, 0), "CENTER")
+        tbl.setStyle(style)
         flow.append(tbl)
 
-    scaled = _scale_widths(widths, usable, floor=0.32 * inch)
+    scaled = _scale_widths(widths, usable, floor=0.35 * inch, protect=min(prefix, 2))
+    # Never clip the Description header (Descriptio/n) — measure bold + cell padding
+    if prefix >= 2 and len(scaled) > 1:
+        desc_min = (
+            stringWidth("Description", "Helvetica-Bold", max(font_size, DEFAULT_FONT_PT))
+            + 20
+        )
+        if scaled[1] < desc_min:
+            deficit = desc_min - scaled[1]
+            scaled[1] = desc_min
+            for j in range(len(scaled) - 1, 1, -1):
+                if deficit <= 0:
+                    break
+                take = min(deficit, max(0, scaled[j] - 0.42 * inch))
+                scaled[j] -= take
+                deficit -= take
     total_scaled = sum(scaled)
 
-    if total_scaled <= usable:
-        if need_landscape and total > PORTRAIT_USABLE:
+    if total_scaled <= usable + 0.01:
+        if need_landscape:
             flow.append(NextPageTemplate("landscape"))
             flow.append(PageBreak())
         append_table(rows, scaled)
-        flow.append(Spacer(1, 4))
-        if need_landscape and total > PORTRAIT_USABLE:
+        flow.append(Spacer(1, 6))
+        if need_landscape:
+            # Next page becomes portrait; no PageBreak here (avoids blank interstitial pages)
             flow.append(NextPageTemplate("portrait"))
         return flow
 
+    # Split measurement must use the same header layout
     chunks = chunks_for_split(scaled, prefix, usable)
-    assert_split_headers_unique(rows, prefix=prefix, chunks=chunks, header_rows=header_rows)
+    assert_split_headers_unique(
+        measure_rows, prefix=prefix, chunks=chunks, header_rows=col_header_rows
+    )
 
-    flow.append(NextPageTemplate("landscape"))
-    flow.append(PageBreak())
+    if not lock_landscape:
+        flow.append(NextPageTemplate("landscape"))
+        flow.append(PageBreak())
 
     for ci, (c0, c1) in enumerate(chunks):
         if ci > 0:
             flow.append(Spacer(1, 3))
         sub_rows = [row[:prefix] + row[c0:c1] for row in rows]
         sub_widths = _scale_widths(
-            scaled[:prefix] + scaled[c0:c1], usable, floor=0.32 * inch
+            scaled[:prefix] + scaled[c0:c1],
+            usable,
+            floor=0.35 * inch,
+            protect=min(prefix, 2),
         )
         append_table(sub_rows, sub_widths)
 
-    flow.append(Spacer(1, 4))
-    flow.append(NextPageTemplate("portrait"))
+    flow.append(Spacer(1, 6))
+    if not lock_landscape:
+        flow.append(NextPageTemplate("portrait"))
     return flow
 
 
