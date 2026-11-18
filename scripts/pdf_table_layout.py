@@ -288,6 +288,7 @@ def wide_table_flowables(
     *,
     body_style: ParagraphStyle,
     section_title: str | None = None,
+    lock_landscape: bool = False,
 ) -> list:
     rows = prune_empty_columns([[str(c) for c in r] for r in raw_rows])
     rows = [
@@ -351,10 +352,9 @@ def wide_table_flowables(
     widths = _natural_col_widths(measure_rows, font_name, font_size)
     total = sum(widths)
     ncol = max(len(r) for r in rows)
-    usable = PORTRAIT_USABLE
-    need_landscape = total > usable or ncol >= 7
-    if need_landscape:
+    if lock_landscape:
         usable = LANDSCAPE_USABLE
+        need_landscape = False
         while total > usable and font_size > MIN_FONT_PT:
             font_size -= 0.5
             cell_style.fontSize = font_size
@@ -365,6 +365,21 @@ def wide_table_flowables(
             title_cell_style.leading = font_size + 2.5
             widths = _natural_col_widths(measure_rows, font_name, font_size)
             total = sum(widths)
+    else:
+        usable = PORTRAIT_USABLE
+        need_landscape = total > usable or ncol >= 7
+        if need_landscape:
+            usable = LANDSCAPE_USABLE
+            while total > usable and font_size > MIN_FONT_PT:
+                font_size -= 0.5
+                cell_style.fontSize = font_size
+                cell_style.leading = font_size + 1.5
+                header_cell_style.fontSize = font_size
+                header_cell_style.leading = font_size + 1.5
+                title_cell_style.fontSize = font_size + 1
+                title_cell_style.leading = font_size + 2.5
+                widths = _natural_col_widths(measure_rows, font_name, font_size)
+                total = sum(widths)
 
     flow: list = []
 
@@ -421,8 +436,9 @@ def wide_table_flowables(
         measure_rows, prefix=prefix, chunks=chunks, header_rows=col_header_rows
     )
 
-    flow.append(NextPageTemplate("landscape"))
-    flow.append(PageBreak())
+    if not lock_landscape:
+        flow.append(NextPageTemplate("landscape"))
+        flow.append(PageBreak())
 
     for ci, (c0, c1) in enumerate(chunks):
         if ci > 0:
@@ -437,7 +453,8 @@ def wide_table_flowables(
         append_table(sub_rows, sub_widths)
 
     flow.append(Spacer(1, 6))
-    flow.append(NextPageTemplate("portrait"))
+    if not lock_landscape:
+        flow.append(NextPageTemplate("portrait"))
     return flow
 
 

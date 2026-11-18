@@ -199,3 +199,81 @@ def test_catalog_pdf_spot_checks():
     # All main-book table configurations must render
     assert _count_pdf_table_configs(text) >= 271
 
+
+def _pdf_body_lines(page_text: str, page_no: int) -> list[str]:
+    """Strip branded chrome so layout guards see only content."""
+    skip = {
+        "Country Comfort",
+        "Foothills Amish Furniture · Landrum, SC",
+        f"Page {page_no}",
+    }
+    out: list[str] = []
+    for raw in (page_text or "").splitlines():
+        line = raw.strip()
+        if not line or line in skip or line.startswith("Updated "):
+            continue
+        out.append(line)
+    return out
+
+
+def _looks_like_collection_title(line: str) -> bool:
+    """True for collection/section heads, not wrapped option tails."""
+    import re
+
+    if not line or "$" in line:
+        return False
+    low = line.lower()
+    if low in {
+        "item #",
+        "description",
+        "size",
+        "leaf / top",
+        "price",
+        "overall",
+        "country comfort retail price list",
+    }:
+        return False
+    if line.startswith("+") or line.startswith("−") or line.startswith("-"):
+        return False
+    # Short display titles / section heads (not long prose notes)
+    if len(line) > 48:
+        return False
+    if any(ch.isdigit() for ch in line) and not line[0].isalpha():
+        return False
+    # Wrapped description fragments ("Hand Hewn or Worn Edge") are not titles
+    if re.search(r"\b(or|and|with|for|on|the|of|these)\b", line):
+        return False
+    # Collection titles are Title Case / proper names (allow & and hyphen)
+    if not re.match(r"^[A-Z][A-Za-z0-9 &/'.,-]*$", line):
+        return False
+    return True
+
+
+@pytest.mark.skipif(not CATALOG.is_file(), reason="Country Comfort PDF not built")
+def test_catalog_pdf_all_landscape_no_blank_no_orphan_titles():
+    """Every page landscape 792×612; no empty pages; titles stay with rows."""
+    with pdfplumber.open(CATALOG) as pdf:
+        assert len(pdf.pages) >= 1
+        for i, page in enumerate(pdf.pages):
+            w, h = float(page.width), float(page.height)
+            assert w > h, f"page {i + 1} is portrait ({w:.0f}x{h:.0f})"
+            assert abs(w - 792) < 2 and abs(h - 612) < 2, (
+                f"page {i + 1} size {w:.0f}x{h:.0f}, expected landscape 792x612"
+            )
+            text = page.extract_text() or ""
+            body = _pdf_body_lines(text, i + 1)
+            has_price = any("$" in ln for ln in body)
+            is_cover = i == 0 and any(
+                "retail price list" in ln.lower() for ln in body
+            )
+            if not is_cover:
+                assert has_price, f"page {i + 1} has no price rows: {body[:6]!r}"
+            if not has_price:
+                continue
+            last_price = max(j for j, ln in enumerate(body) if "$" in ln)
+            trailing = body[last_price + 1 :]
+            orphan = [ln for ln in trailing if _looks_like_collection_title(ln)]
+            assert not orphan, (
+                f"page {i + 1} ends with title(s) and no rows: {orphan!r}"
+            )
+

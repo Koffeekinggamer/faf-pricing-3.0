@@ -80,6 +80,7 @@ def main() -> int:
         builder_name=BUILDER,
         updated=args.date,
         output_path=pdf_path,
+        all_landscape=True,
     )
     assert_pdfs_no_overlap([pdf_path])
     assert_pdfs_quality([pdf_path])

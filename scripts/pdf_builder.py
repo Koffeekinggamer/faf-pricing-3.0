@@ -13,6 +13,7 @@ from reportlab.lib.units import inch
 from reportlab.platypus import (
     BaseDocTemplate,
     Frame,
+    KeepTogether,
     NextPageTemplate,
     PageBreak,
     PageTemplate,
@@ -98,6 +99,7 @@ def build_retail_pdf_processed(
     builder_name: str,
     updated: str,
     output_path: Path,
+    all_landscape: bool = False,
 ) -> int:
     assert_no_approx(builder_name, updated)
     processed = collapse_blank_rows(processed)
@@ -155,6 +157,8 @@ def build_retail_pdf_processed(
     pending_lead: list[tuple[str, str]] = []
     # Survives mid-collection header flushes so continued wide blocks keep the title
     active_section: str | None = None
+    # Prose/subheads under a pending section — kept with the next table
+    pending_intro: list = []
 
     def _insert_after_page_switches(flow: list, lead: list) -> list:
         if not lead:
@@ -162,26 +166,34 @@ def build_retail_pdf_processed(
         i = 0
         while i < len(flow) and isinstance(flow[i], (NextPageTemplate, PageBreak)):
             i += 1
+        # Keep section intro + first real flowable together so titles aren't orphaned
+        first = flow[i] if i < len(flow) else None
+        rest = flow[i + 1 :] if i < len(flow) else []
+        if first is not None and lead:
+            glued = KeepTogether(lead + [first])
+            return flow[:i] + [glued] + rest
         for j, el in enumerate(lead):
             flow.insert(i + j, el)
         return flow
 
     def flush_sku_table():
-        nonlocal table_buf
+        nonlocal table_buf, pending_intro
         if not table_buf:
             return
         titles = [t for k, t in pending_lead if k == "title"]
         sections = [t for k, t in pending_lead if k == "section"]
         pending_lead.clear()
+        intro = list(pending_intro)
+        pending_intro = []
         flow = sku_table_flowables(table_buf, body_style=body)
         lead = [_p(t, title_style) for t in titles] + [
             _p(s, section_style) for s in sections
-        ]
+        ] + intro
         story.extend(_insert_after_page_switches(flow, lead))
         table_buf = []
 
     def flush_wide_block():
-        nonlocal wide_buf, active_section
+        nonlocal wide_buf, active_section, pending_intro
         if not wide_buf:
             return
         titles = [t for k, t in pending_lead if k == "title"]
@@ -192,18 +204,22 @@ def build_retail_pdf_processed(
         # Mid-collection wood-group flushes clear pending_lead; reuse active_section
         section_title = sections[-1] if sections else active_section
         ncol = max((len(r) for r in wide_buf), default=0)
-        # Narrow option tables start on a fresh portrait page
-        if section_title and ncol <= 3:
+        # Narrow option tables start on a fresh portrait page (skipped when all-landscape)
+        if section_title and ncol <= 3 and not all_landscape:
             story.append(NextPageTemplate("portrait"))
             story.append(PageBreak())
+        intro = list(pending_intro)
+        pending_intro = []
         flow = wide_table_flowables(
             wide_buf,
             body_style=body,
             section_title=section_title,
+            lock_landscape=all_landscape,
         )
         lead = [_p(t, title_style) for t in titles]
         for s in sections[:-1]:
             lead.append(_p(s, section_style))
+        lead.extend(intro)
         story.extend(_insert_after_page_switches(flow, lead))
         wide_buf = []
 
@@ -274,23 +290,29 @@ def build_retail_pdf_processed(
         id="landscape_frame",
     )
 
+    landscape_tmpl = PageTemplate(
+        id="landscape",
+        frames=[landscape_frame],
+        pagesize=landscape(letter),
+        onPage=draw_header_footer,
+    )
+    portrait_tmpl = PageTemplate(
+        id="portrait",
+        frames=[portrait_frame],
+        pagesize=letter,  # must be explicit — doc.pagesize may be swapped to landscape
+        onPage=draw_header_footer,
+    )
+    if all_landscape:
+        templates = [landscape_tmpl]
+        initial_pagesize = landscape(letter)
+    else:
+        templates = [portrait_tmpl, landscape_tmpl]
+        initial_pagesize = letter
+
     doc = BaseDocTemplate(
         str(output_path),
-        pagesize=letter,
-        pageTemplates=[
-            PageTemplate(
-                id="portrait",
-                frames=[portrait_frame],
-                pagesize=letter,  # must be explicit — doc.pagesize may be swapped to landscape
-                onPage=draw_header_footer,
-            ),
-            PageTemplate(
-                id="landscape",
-                frames=[landscape_frame],
-                pagesize=landscape(letter),
-                onPage=draw_header_footer,
-            ),
-        ],
+        pagesize=initial_pagesize,
+        pageTemplates=templates,
         title=f"{builder_name} — Foothills Amish Furniture",
     )
 
@@ -325,6 +347,16 @@ def build_retail_pdf_processed(
             active_section = pr.cells[0]
             continue
 
+        # Hold section + intro prose until the next table so titles aren't orphaned
+        if pr.kind in (RowKind.SUBHEAD, RowKind.PROSE) and any(
+            k == "section" for k, _ in pending_lead
+        ):
+            if pr.kind == RowKind.SUBHEAD:
+                pending_intro.append(_p(pr.cells[0], subhead_style))
+            else:
+                pending_intro.extend(_prose_flowables(pr.cells, body))
+            continue
+
         # Non-table content: emit deferred section on a clean portrait page
         if pending_lead:
             titles = [t for k, t in pending_lead if k == "title"]
@@ -332,12 +364,16 @@ def build_retail_pdf_processed(
             pending_lead.clear()
             if sections:
                 active_section = sections[-1]
-            story.append(NextPageTemplate("portrait"))
-            story.append(PageBreak())
+            if not all_landscape:
+                story.append(NextPageTemplate("portrait"))
+                story.append(PageBreak())
             for t in titles:
                 story.append(_p(t, title_style))
             for s in sections:
                 story.append(_p(s, section_style))
+            if pending_intro:
+                story.extend(pending_intro)
+                pending_intro = []
 
         if pr.kind == RowKind.SUBHEAD:
             story.append(_p(pr.cells[0], subhead_style))
@@ -370,10 +406,12 @@ def build_retail_pdf_processed(
 
     flush_sku_table()
     flush_wide_block()
-    if pending_lead:
+    if pending_lead or pending_intro:
         for k, t in pending_lead:
             story.append(_p(t, title_style if k == "title" else section_style))
         pending_lead.clear()
+        story.extend(pending_intro)
+        pending_intro = []
 
     # If the first table forced landscape via NextPageTemplate+PageBreak, start on
     # landscape instead of leaving a blank portrait cover page.
