@@ -13,6 +13,8 @@ from reportlab.lib.units import inch
 from reportlab.platypus import (
     BaseDocTemplate,
     Frame,
+    NextPageTemplate,
+    PageBreak,
     PageTemplate,
     Paragraph,
     Spacer,
@@ -145,19 +147,34 @@ def build_retail_pdf_processed(
     story: list = []
     table_buf: list[list[str]] = []
     wide_buf: list[list[str]] = []
+    pending_lead: list = []
+
+    def _flush_pending_lead_into(flow: list) -> list:
+        """Place deferred title/section after leading landscape page-breaks."""
+        if not pending_lead:
+            return flow
+        i = 0
+        while i < len(flow) and isinstance(flow[i], (NextPageTemplate, PageBreak)):
+            i += 1
+        for j, el in enumerate(pending_lead):
+            flow.insert(i + j, el)
+        pending_lead.clear()
+        return flow
 
     def flush_sku_table():
         nonlocal table_buf
         if not table_buf:
             return
-        story.extend(sku_table_flowables(table_buf, body_style=body))
+        flow = sku_table_flowables(table_buf, body_style=body)
+        story.extend(_flush_pending_lead_into(flow))
         table_buf = []
 
     def flush_wide_block():
         nonlocal wide_buf
         if not wide_buf:
             return
-        story.extend(wide_table_flowables(wide_buf, body_style=body))
+        flow = wide_table_flowables(wide_buf, body_style=body)
+        story.extend(_flush_pending_lead_into(flow))
         wide_buf = []
 
     page_count_box = {"n": 0}
@@ -270,10 +287,19 @@ def build_retail_pdf_processed(
         flush_wide_block()
 
         if pr.kind == RowKind.TITLE:
-            story.append(_p(pr.cells[0], title_style))
-        elif pr.kind == RowKind.SECTION:
-            story.append(_p(pr.cells[0], section_style))
-        elif pr.kind == RowKind.SUBHEAD:
+            # Defer with the first table so landscape breaks don't leave a blank cover page
+            pending_lead.append(_p(pr.cells[0], title_style))
+            continue
+        if pr.kind == RowKind.SECTION:
+            # Defer until the following table so landscape page-breaks don't orphan titles
+            pending_lead.append(_p(pr.cells[0], section_style))
+            continue
+
+        if pending_lead:
+            story.extend(pending_lead)
+            pending_lead.clear()
+
+        if pr.kind == RowKind.SUBHEAD:
             story.append(_p(pr.cells[0], subhead_style))
         elif pr.kind == RowKind.INDEX:
             if len(pr.cells) >= 2:
@@ -304,6 +330,24 @@ def build_retail_pdf_processed(
 
     flush_sku_table()
     flush_wide_block()
+    if pending_lead:
+        story.extend(pending_lead)
+        pending_lead.clear()
+
+    # If the first table forced landscape via NextPageTemplate+PageBreak, start on
+    # landscape instead of leaving a blank portrait cover page.
+    while story and isinstance(story[0], NextPageTemplate):
+        action = getattr(story[0], "action", None) or ()
+        if len(action) > 1 and action[1] == "landscape":
+            templates = list(doc.pageTemplates)
+            land = [t for t in templates if t.id == "landscape"]
+            port = [t for t in templates if t.id != "landscape"]
+            if land:
+                doc.pageTemplates = land + port
+                doc.pagesize = landscape(letter)
+        story.pop(0)
+    while story and isinstance(story[0], PageBreak):
+        story.pop(0)
 
     doc.build(story)
     return page_count_box["n"]

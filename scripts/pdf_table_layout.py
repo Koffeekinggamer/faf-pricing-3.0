@@ -61,6 +61,19 @@ def _prefix_column_count(rows: list[list[str]]) -> int:
     ncol = max(len(r) for r in rows)
     if ncol <= 3:
         return 1
+    # Prefer header labels when present (Item # / Description, Size / Leaf)
+    h0 = (rows[0][0] or "").strip().lower() if rows[0] else ""
+    h1 = (rows[0][1] or "").strip().lower() if len(rows[0]) > 1 else ""
+    if h0 in {"item #", "item", "size", "order #", "sku"} and h1 in {
+        "description",
+        "leaf / top",
+        "desc",
+        "product",
+        "size",
+    }:
+        return 2
+    if h0 == "size" and "leaf" in h1:
+        return 2
     second_labels = {r[1].strip() for r in rows if len(r) > 1 and r[1].strip()}
     if second_labels and all(
         len(s) <= 12 and not PRICE_RE.match(s) for s in second_labels
@@ -260,8 +273,10 @@ def wide_table_flowables(
 
     widths = _natural_col_widths(rows, font_name, font_size)
     total = sum(widths)
+    ncol = max(len(r) for r in rows)
+    # Wide wood grids fit better in landscape even when barely portrait-sized
     usable = PORTRAIT_USABLE
-    need_landscape = total > usable
+    need_landscape = total > usable or ncol >= 7
     if need_landscape:
         usable = LANDSCAPE_USABLE
         while total > usable and font_size > MIN_FONT_PT:
@@ -269,6 +284,7 @@ def wide_table_flowables(
             cell_style.fontSize = font_size
             cell_style.leading = font_size + 1.5
             header_cell_style.fontSize = font_size
+            header_cell_style.leading = font_size + 1.5
             widths = _natural_col_widths(rows, font_name, font_size)
             total = sum(widths)
 
