@@ -671,28 +671,9 @@ def _parse_table_sheet(
 
 
 def _parse_options(rows: list[list[Any]], title: str) -> list[ProcessedRow]:
+    """Options / wood-grade sheets. Flat $ amounts use ×multiplier exactly once."""
     out = [ProcessedRow(RowKind.SECTION, [title])]
-    grade_buf: list[str] = []
-    current_grade: str | None = None
-
-    def flush_grade() -> None:
-        nonlocal grade_buf, current_grade
-        if current_grade and grade_buf:
-            out.append(
-                ProcessedRow(
-                    RowKind.PROSE,
-                    [f"{current_grade}: " + ", ".join(grade_buf)],
-                )
-            )
-        elif current_grade:
-            out.append(ProcessedRow(RowKind.SUBHEAD, [current_grade]))
-        grade_buf = []
-        current_grade = None
-
     wood_names = {
-        "superior hardwoods",
-        "premium hardwoods",
-        "standard hardwoods",
         "walnut",
         "red oak",
         "rustic cherry",
@@ -708,33 +689,34 @@ def _parse_options(rows: list[list[Any]], title: str) -> list[ProcessedRow]:
         "hickory",
         "burnt hickory",
     }
+    grade_heads = {"standard hardwoods", "superior hardwoods", "premium hardwoods"}
 
     for row in rows:
         label = _fix_typo(_cell(row[0] if row else ""))
         if not label or label.upper() == "OPTIONS":
             continue
-        low = label.lower()
+        low = label.lower().strip()
         if low.startswith("free options"):
-            flush_grade()
             out.append(ProcessedRow(RowKind.SUBHEAD, [label]))
             continue
-        if low in {"standard hardwoods", "superior hardwoods", "premium hardwoods"}:
-            flush_grade()
-            current_grade = label
+        if low in grade_heads:
+            out.append(ProcessedRow(RowKind.SUBHEAD, [label]))
             continue
         if low.startswith("add ") and PCT_RE.search(label):
-            flush_grade()
             out.append(ProcessedRow(RowKind.SUBHEAD, [label]))
             continue
         if low.startswith("additional table"):
-            flush_grade()
             out.append(ProcessedRow(RowKind.SUBHEAD, [label]))
             continue
-        if current_grade and low in wood_names:
-            grade_buf.append(label)
+        if low in wood_names or low == "add 75%":
+            # Keep "Add 75%" as subhead; individual woods as prose under their grade
+            if low.startswith("add ") and PCT_RE.search(label):
+                out.append(ProcessedRow(RowKind.SUBHEAD, [label]))
+            else:
+                out.append(ProcessedRow(RowKind.PROSE, [label]))
             continue
 
-        flush_grade()
+        # Column dollar (Options sheet add-ons)
         amt = None
         for c in row[1:]:
             if _is_num(c):
@@ -742,7 +724,6 @@ def _parse_options(rows: list[list[Any]], title: str) -> list[ProcessedRow]:
                 break
         pct = re.search(r"\+\s*(\d+)\s*%", label)
         if pct:
-            # Single prose line — avoid duplicated floating "+25%" boxes
             clean = re.sub(r"\s+", " ", label.replace("\n", " ")).strip()
             clean = re.sub(r"\s*=\s*\+\s*\d+\s*%", "", clean).strip(" =")
             out.append(ProcessedRow(RowKind.PROSE, [f"{clean}: +{pct.group(1)}%"]))
@@ -753,22 +734,26 @@ def _parse_options(rows: list[list[Any]], title: str) -> list[ProcessedRow]:
                 out.append(ProcessedRow(RowKind.WIDE, [lab, price]))
             continue
         if "=" in label:
-            clean = re.sub(r"\s+", " ", label.replace("\n", " ")).strip()
-            clean = sanitize_retail_text(clean, MULTIPLIER, allow_percent=True) or clean
-            # Flat dollars embedded after = → multiply
-            m = re.search(r"=\s*\+\s*\$?\s*([\d,]+)", clean)
-            if m and not PCT_RE.search(clean):
-                lab, price = _format_flat_add(clean.split("=")[0].strip(), float(m.group(1).replace(",", "")), MULTIPLIER)
+            raw = re.sub(r"\s+", " ", label.replace("\n", " ")).strip()
+            # Extract workbook $ BEFORE any sanitize/transform (avoid double ×2.7)
+            m_dollar = re.search(r"=\s*\+\s*\$?\s*([\d,]+(?:\.\d+)?)", raw)
+            if m_dollar and not PCT_RE.search(raw):
+                wholesale = float(m_dollar.group(1).replace(",", ""))
+                lab = raw.split("=")[0].strip()
+                lab, price = _format_flat_add(lab, wholesale, MULTIPLIER)
                 if lab:
                     out.append(ProcessedRow(RowKind.WIDE, [lab, price]))
                     continue
+            if re.search(r"=\s*free", raw, re.I):
+                out.append(ProcessedRow(RowKind.PROSE, [raw]))
+                continue
+            clean = sanitize_retail_text(raw, MULTIPLIER, allow_percent=True) or raw
             out.append(ProcessedRow(RowKind.PROSE, [clean]))
             continue
-        if PCT_RE.search(label) or low in wood_names:
+        if PCT_RE.search(label):
             out.append(ProcessedRow(RowKind.PROSE, [label]))
             continue
         out.append(ProcessedRow(RowKind.PROSE, [label]))
-    flush_grade()
     return out
 
 

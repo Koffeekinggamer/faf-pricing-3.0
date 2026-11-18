@@ -44,6 +44,22 @@ def test_flat_addon_retail_math():
     assert retail_whole_dollar(15, MULTIPLIER) == 41
 
 
+# Additional Table Options workbook dollars → ceil(×2.7) exactly once
+OPTION_DOLLARS = [
+    ("36\" or 42\" High", 50, 135),
+    ("2 - Tone Stained or Paint", 80, 216),
+    ("2 - Tone Paint and Glaze", 130, 351),
+    ("1 - Color Paint Whole Table", 130, 351),
+    ("Hand Planed", 180, 486),
+    ("Ball Bearing Slides", 100, 270),
+]
+
+
+def test_additional_table_option_dollars_once():
+    for _label, wholesale, expected in OPTION_DOLLARS:
+        assert retail_whole_dollar(wholesale, MULTIPLIER) == expected
+
+
 def _safe_xlsx_available() -> bool:
     """Return True only when local upload workbooks are readable (never raises)."""
     try:
@@ -99,13 +115,40 @@ def test_processed_spot_prices_and_addons():
     flat = "\n".join(
         " | ".join(str(x) for x in pr.cells)
         for pr in rows
-        if pr.kind in (RowKind.WIDE, RowKind.PROSE)
+        if pr.kind in (RowKind.WIDE, RowKind.PROSE, RowKind.SUBHEAD, RowKind.SECTION)
     )
     assert "Fabric Seat" in flat and "+$54" in flat
     assert "Leather" in flat and "+$108" in flat
-    assert "Cherry Seat" in flat and "+$14" in flat
     assert "Footrest" in flat and "+$41" in flat
     assert "Unfin" not in flat
+
+    # Additional Table Options: ×2.7 exactly once
+    for label, wholesale, expected in OPTION_DOLLARS:
+        assert retail_whole_dollar(wholesale, MULTIPLIER) == expected
+        needle = f"+${expected:,}"
+        assert needle in flat, f"{label} should be {needle}"
+    assert "+$365" not in flat and "+$584" not in flat and "+$948" not in flat
+
+    # Wood-grade lists printed in full
+    assert "Free Options" in flat
+    assert "Red Oak" in flat and "Sap Cherry" in flat
+    assert "Superior Hardwoods" in flat
+    assert "Premium Hardwoods" in flat
+    assert "Distressed = Free" in flat
+
+    # Main-book table configs
+    assert stats.get("table_configs", 0) >= 271
+
+
+def _count_pdf_table_configs(text: str) -> int:
+    """Count priced size×size table rows rendered in the PDF."""
+    import re
+
+    n = 0
+    for line in text.splitlines():
+        if re.match(r"^\d+x\d+\s+.+\s+\d+\s+\$", line.strip(), re.I):
+            n += 1
+    return n
 
 
 @pytest.mark.skipif(not CATALOG.is_file(), reason="Country Comfort PDF not built")
@@ -126,13 +169,20 @@ def test_catalog_pdf_spot_checks():
         "$1,369",
         "+$54",
         "+$108",
-        "+$14",
+        "+$135",
+        "+$216",
+        "+$351",
+        "+$486",
+        "+$270",
+        "$948",
+        "$1,165",
     ):
         assert price in text, price
     assert "wholesale" not in text.lower()
     assert "unfin" not in text.lower()
     assert "Preformance" not in text
     assert "Performance" in text
+    assert "+$365" not in text
     # Vanessa must not price paired-collection order # 1021 as $2,757
     assert "3311" in text
     for page_text in ((p.extract_text() or "") for p in pdfplumber.open(CATALOG).pages):
@@ -140,3 +190,12 @@ def test_catalog_pdf_spot_checks():
             assert "$2,757" not in page_text
             break
     assert "3636 LAB 00" in text or "3636 LAB" in text
+    assert "12x50" in text
+    assert "Free Options" in text
+    assert "Standard Hardwoods" in text
+    assert "Distressed = Free" in text
+    assert "Description" in text
+    assert "Descriptio\nn" not in text
+    # All main-book table configurations must render
+    assert _count_pdf_table_configs(text) >= 271
+
