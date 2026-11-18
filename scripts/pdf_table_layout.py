@@ -144,6 +144,32 @@ def _cell_para(text: str, style: ParagraphStyle) -> Paragraph:
     return Paragraph(escape_for_paragraph_markup(t), style)
 
 
+_PREFIX_HEADER_LABELS = frozenset(
+    {
+        "item #",
+        "item",
+        "description",
+        "size",
+        "leaf / top",
+        "price",
+        "order #",
+        "sku",
+        "desc",
+        "product",
+    }
+)
+
+
+def _stack_multiword_wood_header(cell: str) -> str:
+    """Prefer wrapping wood names at spaces (RUSTIC\\nWALNUT), not mid-word."""
+    t = (cell or "").strip()
+    if not t or "\n" in t or " " not in t:
+        return t
+    if t.lower() in _PREFIX_HEADER_LABELS or "/" in t:
+        return t
+    return "\n".join(t.split())
+
+
 def _table_style(header_rows: int, font_size: float) -> TableStyle:
     rules: list[tuple] = [
         ("GRID", (0, 0), (-1, -1), 0.25, FAF_MUTED),
@@ -308,6 +334,17 @@ def wide_table_flowables(
         leading=font_size + 2.5,
         alignment=TA_CENTER,
     )
+
+    # Prefer space-wrap on multi-word wood headers (avoid RUSTIC WALNU/T)
+    if col_header_rows:
+        hdr_i = title_rows
+        hdr = list(rows[hdr_i])
+        for j in range(prefix, len(hdr)):
+            hdr[j] = _stack_multiword_wood_header(hdr[j])
+        rows[hdr_i] = hdr
+
+    # Never break header words mid-glyph when a column is tight
+    header_cell_style.splitLongWords = 0
 
     # Measure widths from column-header + body (ignore title row)
     measure_rows = rows[title_rows:] if title_rows else rows

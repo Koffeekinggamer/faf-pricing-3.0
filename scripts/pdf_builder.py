@@ -153,6 +153,8 @@ def build_retail_pdf_processed(
     wide_buf: list[list[str]] = []
     # Deferred lead-ins: ("title"|"section", text)
     pending_lead: list[tuple[str, str]] = []
+    # Survives mid-collection header flushes so continued wide blocks keep the title
+    active_section: str | None = None
 
     def _insert_after_page_switches(flow: list, lead: list) -> list:
         if not lead:
@@ -179,13 +181,16 @@ def build_retail_pdf_processed(
         table_buf = []
 
     def flush_wide_block():
-        nonlocal wide_buf
+        nonlocal wide_buf, active_section
         if not wide_buf:
             return
         titles = [t for k, t in pending_lead if k == "title"]
         sections = [t for k, t in pending_lead if k == "section"]
         pending_lead.clear()
-        section_title = sections[-1] if sections else None
+        if sections:
+            active_section = sections[-1]
+        # Mid-collection wood-group flushes clear pending_lead; reuse active_section
+        section_title = sections[-1] if sections else active_section
         ncol = max((len(r) for r in wide_buf), default=0)
         # Narrow option tables start on a fresh portrait page
         if section_title and ncol <= 3:
@@ -317,6 +322,7 @@ def build_retail_pdf_processed(
             continue
         if pr.kind == RowKind.SECTION:
             pending_lead.append(("section", pr.cells[0]))
+            active_section = pr.cells[0]
             continue
 
         # Non-table content: emit deferred section on a clean portrait page
@@ -324,6 +330,8 @@ def build_retail_pdf_processed(
             titles = [t for k, t in pending_lead if k == "title"]
             sections = [t for k, t in pending_lead if k == "section"]
             pending_lead.clear()
+            if sections:
+                active_section = sections[-1]
             story.append(NextPageTemplate("portrait"))
             story.append(PageBreak())
             for t in titles:
