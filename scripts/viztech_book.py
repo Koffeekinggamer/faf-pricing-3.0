@@ -28,7 +28,7 @@ SKIP_SHEET_RE = re.compile(
     r"do\s*not\s*print|\(for\s*wholesale\)|internet\s*policy.*wholesale|^pricing$|"
     r"price_multiplier|_calc|(?:^|_)calc$|for\s*print|markup\s*page|contact\s*and\s*info|"
     r"^fabric\s*list$|back\s*cover|retail\s*cover|retail\s*options|retail\s*furniture|"
-    r"^2026\s*retail$|retail\s*price\s*list\s*markup)",
+    r"^2026\s*retail$|retail\s*price\s*list\s*markup|^increase\s*entry$)",
     re.I,
 )
 UNFINISHED_SHEET_RE = re.compile(r"unfinished|retail\s*unf", re.I)
@@ -87,6 +87,14 @@ def section_title_from_path(path: Path) -> str:
         return "Bedroom, Tables & Barstools"
     if re.search(r"Work_Stations", fname, re.I):
         return "Work Stations"
+    if re.search(r"_Slabs?_", fname, re.I):
+        return "Slabs"
+    if re.search(r"_Barrel_", fname, re.I):
+        return "Barrel"
+    if re.search(r"_Saw_Marked_", fname, re.I):
+        return "Saw Marked"
+    if re.search(r"_Dining_", fname, re.I):
+        return "Dining"
     n = path.stem
     for pat, label in (
         (r"Master", "Master"),
@@ -132,6 +140,18 @@ def _cell_str(c: Any) -> str:
         return ""
     if isinstance(c, float) and c == int(c):
         return str(int(c))
+    # Avoid dumping Excel datetime as "2026-03-24 00:00:00" into retail PDFs
+    try:
+        from datetime import date, datetime
+
+        if isinstance(c, datetime):
+            if c.hour == 0 and c.minute == 0 and c.second == 0:
+                return f"{c.strftime('%b')} {c.day}, {c.year}"
+            return c.isoformat(sep=" ")
+        if isinstance(c, date):
+            return f"{c.strftime('%b')} {c.day}, {c.year}"
+    except Exception:
+        pass
     return str(c).strip()
 
 
@@ -172,9 +192,18 @@ def load_workbook_sheets(path: Path) -> dict[str, list[list]]:
 
 
 def _drop_row(row: list, joined: str) -> bool:
-    if is_dealer_terms_text(joined):
+    # Ignore raw wholesale numbers when classifying dealer/contact prose
+    text_only = clean_pdf_plain_text(
+        " ".join(
+            _cell_str(c)
+            for c in row
+            if _cell_str(c) and not _is_wholesale_price(c)
+        )
+    )
+    probe = text_only or joined
+    if is_dealer_terms_text(probe):
         return True
-    low = joined.lower()
+    low = probe.lower()
     if any(
         x in low
         for x in (
@@ -187,13 +216,18 @@ def _drop_row(row: list, joined: str) -> bool:
             "invoiced from",
             "std. terms",
             "std terms",
+            "internet stores",
+            "internet price",
+            "visa, mastercard",
+            "showroom floor",
         )
     ):
         return True
     if re.search(
         r"\bdiscount\b.*\b(?:payment|received|days)\b|\bpicked\s+up\b.*\d+\s+days\b|"
-        r"\bconsidered\s+stock\b|instructions\s*-\s*please\s+read|\d+\s*%\s*discount\b",
-        joined,
+        r"\bconsidered\s+stock\b|instructions\s*-\s*please\s+read|\d+\s*%\s*discount\b|"
+        r"\bfinshing\b|\bfinishing\b.*\bx\s*200\s*%",
+        probe,
         re.I,
     ):
         return True
@@ -201,7 +235,7 @@ def _drop_row(row: list, joined: str) -> bool:
         return True
     if re.search(r"\bnet\s*30\b", low):
         return True
-    if is_builder_contact_text(joined):
+    if is_builder_contact_text(probe):
         return True
     return False
 
@@ -214,10 +248,13 @@ def _finished_price_cols(header_rows: list[list], width: int) -> set[int]:
             c = h[j]
             if not isinstance(c, str):
                 continue
-            s = c.lower()
+            s = c.lower().strip()
             if re.search(r"\bunfinished\d*\b", s) and not re.search(r"\bfinished\b", s):
                 unfinished.add(j)
             elif re.search(r"\bfinished\b", s):
+                finished.add(j)
+            elif re.search(r"\b(?:stain|glaz(?:e|ing)|2[\s-]?tone|paint)\b", s):
+                # Fishers Furniture: Stain / 2-Tone & Glazing are finished options
                 finished.add(j)
     if finished:
         return finished - unfinished
@@ -225,14 +262,34 @@ def _finished_price_cols(header_rows: list[list], width: int) -> set[int]:
     return set()
 
 
+def _item_code_cols(header_rows: list[list], width: int) -> set[int]:
+    cols: set[int] = set()
+    for h in header_rows:
+        for j in range(min(width + 1, len(h))):
+            c = h[j]
+            if not isinstance(c, str):
+                continue
+            s = c.lower().strip()
+            if re.search(r"^(?:item\s*#|item\s*no\.?|item\s*number|sku|order\s*#)$", s):
+                cols.add(j)
+    if not cols and width >= 1:
+        # Default: first column is often the item code when a description follows
+        cols.add(0)
+    return cols
+
 def _row_item_label(row: list) -> tuple[str, int]:
     for j, c in enumerate(row[:6]):
+        if _is_wholesale_price(c) and j > 0:
+            # Don't treat mid-row wholesale amounts as the item label
+            continue
         if isinstance(c, (int, float)) and not isinstance(c, bool):
             v = float(c)
-            if 100 <= v <= 999999 and j == 0:
+            if v == int(v) and 1 <= v <= 999999 and j == 0:
                 return str(int(v)), j
         s = _cell_str(c)
         if not s:
+            continue
+        if re.fullmatch(r"\d+(?:\.\d+)?", s) and j > 0:
             continue
         if ITEM_CODE_RE.match(s) or (len(s) > 8 and re.search(r"\d", s)):
             return s, j
@@ -282,15 +339,88 @@ def _transform_row_prices(
     return cells
 
 
+def _labeled_cols_have_prices(
+    rows: list[list], start: int, labeled: set[int]
+) -> bool:
+    """True when most priced rows actually store values in the labeled columns."""
+    hits = misses = 0
+    for row in rows[start : start + 120]:
+        if not any(_is_wholesale_price(c) for c in row):
+            continue
+        if any(j < len(row) and _is_wholesale_price(row[j]) for j in labeled):
+            hits += 1
+        else:
+            misses += 1
+    return hits > 0 and hits >= misses
+
+
+def _mirror_finished_cols(
+    rows: list[list], start: int, header_block: list[list], width: int
+) -> set[int]:
+    """Map finished headers to trailing wholesale bases (Fighting Creek markup=0)."""
+    unfinished: set[int] = set()
+    finished: set[int] = set()
+    for h in header_block:
+        for j in range(min(width + 1, len(h))):
+            c = h[j]
+            if not isinstance(c, str):
+                continue
+            s = c.lower()
+            if re.search(r"\bunfinished\d*\b", s) and not re.search(r"\bfinished\b", s):
+                unfinished.add(j)
+            elif re.search(r"\bfinished\b", s) or re.search(
+                r"\b(?:stain|glaz(?:e|ing)|2[\s-]?tone|paint)\b", s
+            ):
+                finished.add(j)
+    labeled = finished | unfinished
+    if not labeled:
+        return set()
+    first_hdr = min(labeled)
+    for row in rows[start : start + 80]:
+        nums = [j for j, c in enumerate(row) if _is_wholesale_price(c)]
+        if len(nums) < len(labeled):
+            continue
+        # Trailing block after the header-labeled region
+        trailing = [j for j in nums if j > max(labeled)]
+        if len(trailing) < len(labeled):
+            continue
+        offset = trailing[0] - first_hdr
+        if offset <= 0:
+            continue
+        mirrored = {j + offset for j in finished}
+        if any(
+            j < len(row) and _is_wholesale_price(row[j])
+            for j in mirrored
+            for row in rows[start : start + 40]
+        ):
+            return mirrored
+    return set()
+
+
 def _infer_price_cols(rows: list[list], start: int) -> set[int]:
     cols: set[int] = set()
-    header_block = rows[start : start + 12]
-    width = max(len(r) for r in rows[start : start + 40]) if rows else 0
+    # Prefer a nearby header row above the current line when present
+    header_start = start
+    for back in range(0, min(start, 30)):
+        idx = start - back
+        row = rows[idx] if idx < len(rows) else []
+        if any(isinstance(c, str) and re.search(r"item\s*#|unfinished|finished|stain", str(c), re.I) for c in row):
+            header_start = idx
+            break
+    header_block = rows[header_start : header_start + 12]
+    width = max((len(r) for r in rows[header_start : header_start + 40]), default=0)
+    item_cols = _item_code_cols(header_block, width)
     labeled = _finished_price_cols(header_block, width)
+    if labeled and _labeled_cols_have_prices(rows, start, labeled):
+        return labeled - item_cols
     if labeled:
-        return labeled
+        mirrored = _mirror_finished_cols(rows, start, header_block, width)
+        if mirrored:
+            return mirrored - item_cols
     for row in rows[start : start + 200]:
         for j, c in enumerate(row):
+            if j in item_cols:
+                continue
             if _is_wholesale_price(c):
                 cols.add(j)
     # Bamm's: prefer right half if mirror empty left
@@ -301,14 +431,18 @@ def _infer_price_cols(rows: list[list], start: int) -> set[int]:
             cols = right
     if not cols:
         return set()
-    # Drop unfinished-only columns when paired (odd/even): col with unfinished header
-    bad: set[int] = set()
+    # Drop unfinished-only columns when paired with an unfinished header
+    bad: set[int] = set(item_cols)
     for h in header_block:
         for j, c in enumerate(h):
-            if isinstance(c, str) and c.strip().lower() == "unfinished":
+            if not isinstance(c, str):
+                continue
+            s = c.strip().lower()
+            if s == "unfinished" or (
+                re.search(r"\bunfinished\b", s) and not re.search(r"\bfinished\b", s)
+            ):
                 bad.add(j)
     return {j for j in cols if j not in bad}
-
 
 def _process_sheet(
     name: str,
@@ -451,6 +585,37 @@ def luxhome_has_finished_products(path: Path) -> bool:
     return False
 
 
+def _prefer_wholesale_sheet_names(
+    sheets: dict[str, list[list]],
+) -> set[str]:
+    """When both Wholesale and a markup Price List exist, keep wholesale only."""
+    names = list(sheets.keys())
+    lower = {n: n.casefold() for n in names}
+    has_wholesale = any(re.search(r"\bwholesale\b", v) for v in lower.values())
+    skip: set[str] = set()
+    if has_wholesale:
+        for n, v in lower.items():
+            if re.search(r"\bwholesale\b", v):
+                continue
+            if re.search(r"price\s*list", v) and not re.search(r"\bwholesale\b", v):
+                skip.add(n)
+    # Slab workbooks: Prices is often formula-only (empty data_only); Master holds wholesale
+    if any(v == "prices" for v in lower.values()) and any(v == "master" for v in lower.values()):
+        prices_name = next(n for n, v in lower.items() if v == "prices")
+        master_name = next(n for n, v in lower.items() if v == "master")
+        prices_has = any(
+            _is_wholesale_price(c) for row in sheets[prices_name] for c in row[1:]
+        )
+        master_has = any(
+            _is_wholesale_price(c) for row in sheets[master_name] for c in row[1:]
+        )
+        if master_has and not prices_has:
+            skip.add(prices_name)
+        else:
+            skip.add(master_name)
+    return skip
+
+
 def process_viztech_workbook(
     path: Path,
     *,
@@ -471,9 +636,13 @@ def process_viztech_workbook(
     skipped: list[str] = []
     out: list[ProcessedRow] = []
     has_grid = False
+    prefer_skip = _prefer_wholesale_sheet_names(sheets)
 
     for name, rows in sheets.items():
         if SKIP_SHEET_RE.search(name):
+            skipped.append(name)
+            continue
+        if name in prefer_skip:
             skipped.append(name)
             continue
         if UNFINISHED_SHEET_RE.search(name):
