@@ -58,8 +58,10 @@ STREET_LINE_RE = re.compile(
 
 AMISH_COUNTY_ROAD_RE = re.compile(r"\b\d+\s+cr\s+\d+\b", re.I)
 
+# Require separators between groups so wholesale decimals like 673.1285313
+# are not mistaken for phone numbers.
 PHONE_NUMBER_RE = re.compile(
-    r"(?:\(\d{3}\)|\d{3})[\s.\-]?\d{3}[\s.\-]?\d{4}"
+    r"(?:\(\d{3}\)[\s.\-]*|\b\d{3}[\s.\-]+)\d{3}[\s.\-]+\d{4}\b"
 )
 
 ZIP_STATE_RE = re.compile(

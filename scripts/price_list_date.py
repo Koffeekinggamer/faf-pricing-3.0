@@ -16,6 +16,10 @@ EFFECTIVE_MONTH_DAY_YEAR = re.compile(
     rf"(?:Effective\s+)?({_MONTH})\s+(\d{{1,2}})(?:st|nd|rd|th)?,?\s+(\d{{4}})",
     re.I,
 )
+EFFECTIVE_NUMERIC = re.compile(
+    r"(?:Effective\s*Date\s*)?(\d{1,2})[/-](\d{1,2})[/-](20\d{2})",
+    re.I,
+)
 RETAIL_TITLE_SUFFIX = re.compile(r"Retail Price List\s*·\s*(.+)$", re.I)
 FN_CHAIRS_TITLE = re.compile(
     rf"(\d{{4}})\s*·\s*Effective\s+({_MONTH})\s+(\d{{1,2}}),?\s+(\d{{4}})",
@@ -43,6 +47,20 @@ def parse_price_list_phrase(text: str) -> date | None:
     m = EFFECTIVE_MONTH_DAY_YEAR.search(t)
     if m:
         return _month_day_year(m.group(1), int(m.group(2)), int(m.group(3)))
+    m = EFFECTIVE_NUMERIC.search(t)
+    if m:
+        a, b, year = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        # Prefer M/D/YYYY (US) when first number is a plausible month
+        if 1 <= a <= 12 and 1 <= b <= 31:
+            try:
+                return date(year, a, b)
+            except ValueError:
+                pass
+        if 1 <= b <= 12 and 1 <= a <= 31:
+            try:
+                return date(year, b, a)
+            except ValueError:
+                pass
     if YEAR_ONLY.fullmatch(t):
         return date(int(t), 1, 1)
     return None
@@ -209,9 +227,41 @@ def _price_list_date_from_upload_name(path: Path) -> date | None:
     return None
 
 
+def _effective_date_from_workbook(path: Path) -> date | None:
+    """Scan early sheet cells for Effective / printed dates (and Excel date values)."""
+    suffix = path.suffix.lower()
+    if suffix not in {".xlsx", ".xlsm", ".xls"}:
+        return None
+    try:
+        from scripts.viztech_book import load_workbook_sheets
+    except Exception:
+        return None
+    try:
+        sheets = load_workbook_sheets(path)
+    except Exception:
+        return None
+    found: list[date] = []
+    for rows in sheets.values():
+        for row in rows[:60]:
+            for c in row:
+                if isinstance(c, datetime):
+                    found.append(c.date())
+                    continue
+                if isinstance(c, date) and not isinstance(c, datetime):
+                    found.append(c)
+                    continue
+                if not isinstance(c, str):
+                    continue
+                parsed = parse_price_list_phrase(c)
+                if parsed:
+                    found.append(parsed)
+    return max(found) if found else None
+
+
 def infer_for_viztech_files(files: list[Path]) -> date | None:
     dates: list[date | None] = []
     for p in files:
+        dates.append(_effective_date_from_workbook(p))
         dates.append(mmyy_from_path(p))
         dates.append(_price_list_date_from_upload_name(p))
     return max_price_list_date(dates)
