@@ -11,6 +11,7 @@ from scripts.viztech_book import (
     _finished_price_cols,
     _infer_price_cols,
     _is_option_note_row,
+    _strip_contact_pricing_phrases,
     _transform_finish_cost_row,
     _transform_sealed_or_base_row,
     _unfinished_only_sheet,
@@ -121,3 +122,19 @@ def test_cost_to_stain_not_finished_product_col():
     # Stain (Fishers-style) kept; cost-to-stain add-on dropped
     assert 3 not in _finished_price_cols(headers, 5)
     assert 4 in _finished_price_cols(headers, 5)
+
+
+def test_strip_contact_us_and_call_for_pricing_phrases():
+    assert (
+        _strip_contact_pricing_phrases(
+            'Only offered in 60" width. Contact us for pricing on custom sizes.'
+        )
+        == 'Only offered in 60" width.'
+    )
+    assert _strip_contact_pricing_phrases(
+        'Call for pricing on Tops Longer than 120"'
+    ) == ""
+    assert (
+        _strip_contact_pricing_phrases("Solid top standard; call for pricing on leaves.")
+        == "Solid top standard"
+    )

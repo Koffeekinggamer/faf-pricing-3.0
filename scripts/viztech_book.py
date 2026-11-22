@@ -44,6 +44,31 @@ RETAIL_MARKUP_COL_RE = re.compile(
     re.I,
 )
 SEALED_PAINTED_RE = re.compile(r"sealed\s*/\s*painted|sealed\s+and\s+painted", re.I)
+# Option / note lines: drop contact-us / call-for-pricing clauses; keep the rest.
+CONTACT_PRICING_PHRASE_RE = re.compile(
+    r"(?:^|[;\s]+)"
+    r"(?:"
+    r"contact\s+us\s+for\s+pricing(?:\s+on\s+[^.;]*)?|"
+    r"call\s+(?:us\s+)?for\s+pricing(?:\s+on\s+[^.;]*)?"
+    r")"
+    r"\.?",
+    re.I,
+)
+
+
+def _strip_contact_pricing_phrases(text: str) -> str:
+    """Remove 'contact us' / 'call for pricing' clauses from notes; keep other wording."""
+    if not text or not str(text).strip():
+        return ""
+    t = CONTACT_PRICING_PHRASE_RE.sub(" ", str(text))
+    t = re.sub(r"\s{2,}", " ", t).strip()
+    t = re.sub(r"^[;\s,.-]+|[;\s,.-]+$", "", t).strip()
+    # Restore a trailing period when the kept clause still looks like a sentence.
+    if t and not t.endswith((".", "!", "?", '"', "'")) and re.search(
+        r"\b(?:width|size|sizes|only|offered)\b", t, re.I
+    ):
+        t = t + "."
+    return t
 
 
 def normalize_builder_name(name: str) -> str:
@@ -828,7 +853,9 @@ def _process_sheet(
             continue
         label_early, _ = _row_item_label(row)
         if _is_option_note_row(row, label_early):
-            prose = sanitize_retail_text(joined, multiplier)
+            prose = _strip_contact_pricing_phrases(
+                sanitize_retail_text(joined, multiplier)
+            )
             if prose and len(prose) > 12 and not is_dealer_terms_text(prose):
                 # Strip accidental multiplied add-on amounts from option notes when
                 # the note already describes the add in words; keep short labels.
@@ -877,18 +904,31 @@ def _process_sheet(
                     continue
             item_hint = label
         prose_cells: list[str] = []
+        prose_before_len = 0
         for c in row:
             if _is_wholesale_price(c):
                 continue
             raw = _cell_str(c)
             if re.search(r"\bapprox", raw, re.I):
                 continue
-            t = sanitize_retail_text(raw, multiplier)
+            cleaned = sanitize_retail_text(raw, multiplier)
+            if cleaned:
+                prose_before_len += len(cleaned)
+            t = _strip_contact_pricing_phrases(cleaned)
             if t and len(t) > 3:
                 prose_cells.append(t)
-        if prose_cells and len(" ".join(prose_cells)) > 40 and not any(
-            is_builder_contact_text(c) for c in prose_cells
-        ) and not any(is_dealer_terms_text(c) for c in prose_cells):
+        joined_prose = " ".join(prose_cells)
+        # Keep normal long prose, or short leftovers after contact-phrase strip
+        # (e.g. 'Only offered in 60" width.').
+        keep_prose = len(joined_prose) > 40 or (
+            prose_before_len > len(joined_prose) and len(joined_prose) > 12
+        )
+        if (
+            prose_cells
+            and keep_prose
+            and not any(is_builder_contact_text(c) for c in prose_cells)
+            and not any(is_dealer_terms_text(c) for c in prose_cells)
+        ):
             out.append(ProcessedRow(RowKind.PROSE, prose_cells[:4]))
         i += 1
     return out
