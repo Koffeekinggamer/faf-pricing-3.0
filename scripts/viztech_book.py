@@ -12,7 +12,13 @@ import openpyxl
 from scripts.dealer_book import ProcessedRow, RowKind, collapse_blank_rows, row_is_blank
 from scripts.dealer_terms import is_builder_contact_text, is_dealer_terms_text
 from scripts.pdf_plain_text import clean_pdf_plain_text
-from scripts.retail_text import forbidden_phrases, retail_price_cell, sanitize_retail_text
+from scripts.retail_text import (
+    excel_percent_to_display,
+    forbidden_phrases,
+    is_percent_token,
+    retail_price_cell,
+    sanitize_retail_text,
+)
 
 try:
     import xlrd
@@ -200,6 +206,8 @@ def _cell_str(c: Any) -> str:
 def _is_wholesale_price(val: Any) -> bool:
     if isinstance(val, str) and val.strip().upper() in {"#N/A", "N/A", "NA", "#NA"}:
         return False
+    if is_percent_token(val):
+        return False
     if not isinstance(val, (int, float)) or isinstance(val, bool):
         return False
     v = float(val)
@@ -210,13 +218,50 @@ def _is_na_cell(val: Any) -> bool:
     return isinstance(val, str) and val.strip().upper() in {"#N/A", "N/A", "NA", "#NA"}
 
 
+def _is_percent_token(val: Any) -> bool:
+    return is_percent_token(val)
+
+
+def _excel_format_is_percent(number_format: str | None) -> bool:
+    if not number_format:
+        return False
+    # Ignore date/time formats that can contain stray %
+    fmt = str(number_format)
+    if re.search(r"[ymdhs]", fmt, re.I) and "%" not in fmt.replace("%%", ""):
+        return False
+    return "%" in fmt.replace("%%", "")
+
+
 def _load_xlsx_sheets(path: Path) -> dict[str, list[list]]:
-    wb = openpyxl.load_workbook(path, data_only=True, read_only=True)
+    """Load values; convert percent-formatted numerics to 'N%' display tokens."""
+    wb_val = openpyxl.load_workbook(path, data_only=True, read_only=True)
+    wb_fmt = openpyxl.load_workbook(path, data_only=False, read_only=True)
     out: dict[str, list[list]] = {}
-    for name in wb.sheetnames:
-        ws = wb[name]
-        out[name] = [list(r) for r in ws.iter_rows(values_only=True)]
-    wb.close()
+    for name in wb_val.sheetnames:
+        ws_v = wb_val[name]
+        ws_f = wb_fmt[name] if name in wb_fmt.sheetnames else None
+        rows: list[list] = []
+        fmt_rows = ws_f.iter_rows() if ws_f is not None else None
+        for r_v in ws_v.iter_rows():
+            fmt_row = next(fmt_rows) if fmt_rows is not None else None
+            row: list = []
+            for idx, c_v in enumerate(r_v):
+                v = c_v.value
+                fmt = ""
+                if fmt_row is not None and idx < len(fmt_row):
+                    fmt = fmt_row[idx].number_format or ""
+                if (
+                    isinstance(v, (int, float))
+                    and not isinstance(v, bool)
+                    and _excel_format_is_percent(fmt)
+                ):
+                    row.append(excel_percent_to_display(float(v)))
+                else:
+                    row.append(v)
+            rows.append(row)
+        out[name] = rows
+    wb_val.close()
+    wb_fmt.close()
     return out
 
 
@@ -268,13 +313,20 @@ def _drop_row(row: list, joined: str) -> bool:
             "internet price",
             "visa, mastercard",
             "showroom floor",
+            "password",
+            "viztechfurniture",
+            "my account",
+            "register",
+            "lagwana.cloud",
         )
     ):
         return True
     if re.search(
         r"\bdiscount\b.*\b(?:payment|received|days)\b|\bpicked\s+up\b.*\d+\s+days\b|"
         r"\bconsidered\s+stock\b|instructions\s*-\s*please\s+read|\d+\s*%\s*discount\b|"
-        r"\bfinshing\b|\bfinishing\b.*\bx\s*200\s*%",
+        r"\bfinshing\b|\bfinishing\b.*\bx\s*200\s*%|"
+        r"approximate\s+finish(?:ing)?\s+costs?|"
+        r"internet\s+policy",
         probe,
         re.I,
     ):
@@ -302,15 +354,40 @@ def _finished_price_cols(header_rows: list[list], width: int) -> set[int]:
             if FINISH_COST_RE.search(s):
                 # Heritage-style finish add-on, not a finished product price
                 continue
-            if re.search(r"\bunfinished\d*\b", s) and not re.search(r"\bfinished\b", s):
+            if re.fullmatch(r"unf\.?", s) or (
+                re.search(r"\bunfinished\d*\b", s) and not re.search(r"\bfinished\b", s)
+            ):
                 unfinished.add(j)
-            elif re.search(r"\bfinished\b", s):
+            elif re.fullmatch(r"fin\.?", s) or re.search(r"\bfinished\b", s):
                 finished.add(j)
             elif SEALED_PAINTED_RE.search(s):
                 finished.add(j)
-            elif re.search(r"\b(?:stain|glaz(?:e|ing)|2[\s-]?tone|paint)\b", s):
-                # Fishers Furniture: Stain / 2-Tone & Glazing are finished options
+            elif re.search(r"\b(?:stain(?:ed)?|glaz(?:e|ing)|2[\s-]?tone|paint)\b", s):
+                # Fishers / Hilltop: Stain / Stained / 2-Tone & Glazing are finished
                 finished.add(j)
+    # Hoosier-style "FINISHED PRICES" band: expand through following wood headers
+    band_starts = [
+        j
+        for h in header_rows
+        for j, c in enumerate(h)
+        if isinstance(c, str) and re.search(r"(?<!un)finished\s*prices?", c, re.I)
+    ]
+    if band_starts:
+        start = min(band_starts)
+        expanded: set[int] = set()
+        for h in header_rows:
+            for j in range(start, min(width + 1, len(h))):
+                c = h[j]
+                if isinstance(c, str) and c.strip():
+                    if re.search(r"\bunfinished\b", c, re.I) and not re.search(
+                        r"(?<!un)finished", c, re.I
+                    ):
+                        break
+                    expanded.add(j)
+                elif c not in (None, "") and _is_wholesale_price(c):
+                    expanded.add(j)
+        if expanded:
+            return expanded - unfinished
     if finished:
         return finished - unfinished
     # Barkman-style: skip col1 markup fractions; take numeric cols not in unfinished set
@@ -469,9 +546,9 @@ def _sealed_or_base_headers(
 _HEADER_HINT_RE = re.compile(
     r"^(?:item\s*#|item\s*number|model\s*#|model\s*no\.?|description|"
     r"wholesale\s*price|sealed\s*/\s*painted|price\s*ea\.?|"
-    r"sug\.?\s*retail|suggested\s*retail)$|"
-    r"\bunfinished\b|\bcost\s+to\s+(?:stain|paint)\s+finish|"
-    r"\bwoodgrain|\bbrights\b",
+    r"sug\.?\s*retail|suggested\s*retail|unf\.?|fin\.?|stained)$|"
+    r"\bunfinished\b|\bfinished\s*prices?|\bcost\s+to\s+(?:stain|paint)\s+finish|"
+    r"\bwoodgrain|\bbrights\b|\bstained\b",
     re.I,
 )
 
@@ -570,6 +647,126 @@ def _is_option_note_row(row: list, label: str) -> bool:
     return False
 
 
+def _is_options_column_header_row(row: list) -> bool:
+    """Hogback-style 'Standard Features / Options / Add' header with no values."""
+    texts = [
+        re.sub(r":\s*$", "", str(c).strip().lower())
+        for c in row
+        if isinstance(c, str) and str(c).strip()
+    ]
+    if not texts:
+        return False
+    if any(_is_wholesale_price(c) or _is_percent_token(c) for c in row):
+        return False
+    allowed = {"standard features", "options", "add", "features", "option"}
+    return all(t in allowed for t in texts) and any(t == "add" for t in texts)
+
+
+def _row_has_add_label(row: list) -> bool:
+    return any(
+        isinstance(c, str) and re.search(r"\badds?\b", c, re.I) for c in row if c not in (None, "")
+    )
+
+
+def _row_has_embedded_dollar_text(row: list) -> bool:
+    """True when a string cell already carries $ amounts (Hillside seat notes)."""
+    return any(isinstance(c, str) and "$" in c for c in row if c not in (None, ""))
+
+
+def _add_label_texts(row: list) -> list[str]:
+    return [
+        c.strip()
+        for c in row
+        if isinstance(c, str) and c.strip() and re.search(r"\badds?\b", c, re.I)
+    ]
+
+
+def _should_use_add_upcharge_transform(row: list) -> bool:
+    """Route only sparse percent/dollar Add upcharges — not prose notes or wood grids."""
+    if not _row_has_add_label(row):
+        return False
+    # Multi-line notes already contain wholesale $ text; leave for sanitize/prose.
+    if _row_has_embedded_dollar_text(row):
+        return False
+    has_pct = any(
+        _is_percent_token(c)
+        or (
+            isinstance(c, (int, float))
+            and not isinstance(c, bool)
+            and 0 < float(c) < 1
+        )
+        for c in row
+    )
+    wholesales = [c for c in row if _is_wholesale_price(c)]
+    if has_pct:
+        return True
+    if not wholesales:
+        return False
+    labels = _add_label_texts(row)
+    # Hillside-style mirrored two-panel rows duplicate the same Add label.
+    if len(labels) >= 2 and len({re.sub(r"\s+", " ", x) for x in labels}) == 1:
+        return False
+    # Wide wood-price grids (Hardwood XX's across species) keep normal column layout.
+    if len(wholesales) >= 3:
+        return False
+    return True
+
+
+def _transform_add_upcharge_row(
+    row: list,
+    multiplier: float,
+    *,
+    spots: list[SpotSample],
+    item_hint: str,
+) -> list[str]:
+    """Keep values beside Add labels; percent tokens are never multiplied."""
+    label_parts: list[str] = []
+    values: list[str] = []
+    seen_labels: set[str] = set()
+    for c in row:
+        if c in (None, ""):
+            continue
+        if _is_percent_token(c):
+            values.append(str(c).strip())
+            continue
+        if isinstance(c, (int, float)) and not isinstance(c, bool):
+            v = float(c)
+            if 0 < v < 1:
+                # Fraction without a captured format — still show as percent near Add
+                values.append(excel_percent_to_display(v))
+            elif _is_wholesale_price(c):
+                retail = retail_price_cell(c, multiplier)
+                values.append(retail)
+                if len(spots) < 3:
+                    spots.append(
+                        SpotSample(
+                            item=(item_hint or "add")[:80],
+                            wholesale=v,
+                            retail=retail,
+                        )
+                    )
+            continue
+        if isinstance(c, str):
+            t = sanitize_retail_text(c, multiplier)
+            if not t:
+                continue
+            key = re.sub(r"\s+", " ", t).casefold()
+            if key in seen_labels:
+                continue
+            seen_labels.add(key)
+            label_parts.append(t)
+    if not label_parts or not values:
+        return []
+    label = clean_pdf_plain_text(" ".join(label_parts))
+    label = _strip_contact_pricing_phrases(label)
+    if not label:
+        return []
+    joined_vals = " ".join(values)
+    if re.search(r"\badd\s*$", label, re.I):
+        return [f"{label} {joined_vals}"]
+    return [f"{label} Add {joined_vals}"]
+
+
 def _transform_finish_cost_row(
     row: list,
     layout: FinishCostLayout,
@@ -657,6 +854,15 @@ def _row_item_label(row: list) -> tuple[str, int]:
             return s, j
         if j <= 1 and len(s) > 12 and not _is_wholesale_price(c):
             return s, j
+        # Hillside-style: "Side Chair" / "Arm Chair" in a mid label column
+        if (
+            j <= 3
+            and len(s) >= 4
+            and re.search(r"[A-Za-z]", s)
+            and not re.fullmatch(r"unf\.?|fin\.?|stained", s, re.I)
+            and not _is_wholesale_price(c)
+        ):
+            return s, j
     return "", -1
 
 
@@ -687,6 +893,9 @@ def _transform_row_prices(
         if _is_na_cell(v):
             cells.append("")
             continue
+        if isinstance(v, str) and v.strip().lower() in {"n/a", "na", "-", "—", "–"}:
+            cells.append("")
+            continue
         if _is_wholesale_price(v):
             wholesale = float(v)
             retail = retail_price_cell(v, multiplier)
@@ -701,7 +910,8 @@ def _transform_row_prices(
         cells.pop()
     if not got_price:
         return []
-    return cells
+    # Drop n/a placeholders left as blanks between size/wood prices
+    return [cells[0]] + [c for c in cells[1:] if c]
 
 
 def _labeled_cols_have_prices(
@@ -769,6 +979,18 @@ def _infer_price_cols(rows: list[list], start: int) -> set[int]:
     item_cols = _item_code_cols(header_block, width)
     excluded = _excluded_price_header_cols(header_block, width)
     labeled = _finished_price_cols(header_block, width) - excluded
+    # Prefer finished/stained columns that actually hold values (Hilltop mirror left empty)
+    if labeled:
+        populated = {
+            j
+            for j in labeled
+            if any(
+                j < len(row) and _is_wholesale_price(row[j])
+                for row in rows[start : start + 120]
+            )
+        }
+        if populated and _labeled_cols_have_prices(rows, start, populated):
+            return populated - item_cols - excluded
     if labeled and _labeled_cols_have_prices(rows, start, labeled):
         return labeled - item_cols - excluded
     if labeled:
@@ -797,11 +1019,19 @@ def _infer_price_cols(rows: list[list], start: int) -> set[int]:
                 continue
             if _is_wholesale_price(c):
                 cols.add(j)
-    # Bamm's: prefer right half if mirror empty left
+    # Bamm's: prefer right half only when the left region has no prices on nearby rows
+    # (do not use hits/misses — option-add columns elsewhere can skew that check).
     if cols and max(cols) >= 4:
         left = {j for j in cols if j < 4}
         right = {j for j in cols if j >= 4}
-        if right and len(left) < len(right):
+        left_has = any(
+            j < len(row) and _is_wholesale_price(row[j])
+            for row in rows[start : start + 40]
+            for j in left
+        )
+        if right and left and not left_has:
+            cols = right
+        elif right and not left:
             cols = right
     if not cols:
         return set()
@@ -851,15 +1081,59 @@ def _process_sheet(
         if re.search(r"how\s+to\s+price\s+beverage|take\s+the\s+base\s+price\s+in\s+column", joined, re.I):
             i += 1
             continue
-        label_early, _ = _row_item_label(row)
-        if _is_option_note_row(row, label_early):
-            prose = _strip_contact_pricing_phrases(
-                sanitize_retail_text(joined, multiplier)
+        if _is_options_column_header_row(row):
+            i += 1
+            continue
+        if _should_use_add_upcharge_transform(row):
+            cells = _transform_add_upcharge_row(
+                row, multiplier, spots=spots, item_hint=item_hint
             )
-            if prose and len(prose) > 12 and not is_dealer_terms_text(prose):
-                # Strip accidental multiplied add-on amounts from option notes when
-                # the note already describes the add in words; keep short labels.
-                out.append(ProcessedRow(RowKind.PROSE, [prose[:200]]))
+            if cells:
+                out.append(ProcessedRow(RowKind.PROSE, cells[:4]))
+                i += 1
+                continue
+        # Pure Add label with no adjacent value and no embedded $ — omit so the
+        # PDF never ends a line with a bare "Add".
+        if (
+            _row_has_add_label(row)
+            and not _row_has_embedded_dollar_text(row)
+            and not any(
+                _is_percent_token(c) or _is_wholesale_price(c) for c in row
+            )
+            and not any(
+                isinstance(c, (int, float))
+                and not isinstance(c, bool)
+                and 0 < float(c) < 1
+                for c in row
+            )
+        ):
+            i += 1
+            continue
+        label_early, _ = _row_item_label(row)
+        # Option notes are prose with embedded $ text. Rows that also carry
+        # numeric wholesale cells (Hardwood XX Add grids) must keep the price path.
+        if _is_option_note_row(row, label_early) and not any(
+            _is_wholesale_price(c) for c in row
+        ):
+            # Keep each note cell (Hillside two-panel books); do not join+truncate
+            # into a single 200-char blob that drops seat/Double-X lines.
+            note_cells: list[str] = []
+            seen_notes: set[str] = set()
+            for c in row:
+                if not isinstance(c, str) or not c.strip():
+                    continue
+                prose = _strip_contact_pricing_phrases(
+                    sanitize_retail_text(c, multiplier)
+                )
+                if not prose or len(prose) <= 12 or is_dealer_terms_text(prose):
+                    continue
+                key = re.sub(r"\s+", " ", prose).casefold()
+                if key in seen_notes:
+                    continue
+                seen_notes.add(key)
+                note_cells.append(prose)
+            if note_cells:
+                out.append(ProcessedRow(RowKind.PROSE, note_cells[:4]))
             i += 1
             continue
         finish_layout = _detect_finish_cost_layout(rows, i)
@@ -887,7 +1161,27 @@ def _process_sheet(
                 i += 1
                 continue
         price_cols = _infer_price_cols(rows, i)
-        cells = _transform_row_prices(row, multiplier, price_cols or range(len(row)), spots=spots, item_hint=item_hint)
+        cells = _transform_row_prices(
+            row, multiplier, price_cols or range(len(row)), spots=spots, item_hint=item_hint
+        )
+        if not cells and any(_is_wholesale_price(c) for c in row):
+            # Inferred wood cols can miss Add-upcharge rows (Hillside Hardwood XX
+            # mirrored panels). Fall back to actual wholesale positions; prefer the
+            # left panel when the same Add label is duplicated.
+            nums = [j for j, c in enumerate(row) if _is_wholesale_price(c)]
+            add_idxs = [
+                j
+                for j, c in enumerate(row)
+                if isinstance(c, str) and re.search(r"\badds?\b", c, re.I)
+            ]
+            if len(add_idxs) >= 2:
+                left = [j for j in nums if j < add_idxs[1]]
+                if left:
+                    nums = left
+            if nums:
+                cells = _transform_row_prices(
+                    row, multiplier, nums, spots=spots, item_hint=item_hint
+                )
         if cells:
             out.append(ProcessedRow(RowKind.WIDE, cells))
             i += 1
@@ -1045,18 +1339,38 @@ def _prefer_wholesale_sheet_names(
             skip.add(prices_name)
         else:
             skip.add(master_name)
-    # Hershy Way: Master holds the priced grid; skip duplicate Sheet*/Cy/T price lists and sizes
+    # When Master holds a real priced grid, skip duplicate Sheet*/Pricing/Title Page.
+    # Hillside-style books use Master as markup-only and keep Sheet3+ price grids.
     if any(v == "master" for v in lower.values()):
-        for n, v in lower.items():
-            if v == "master" or v == "markup":
-                continue
-            if (
-                v.startswith("sheet")
-                or "price list" in v
-                or "product size" in v
-                or re.search(r"^t\s*price|^cy\s*price", v)
-            ):
-                skip.add(n)
+        master_name = next(n for n, v in lower.items() if v == "master")
+        master_prices = sum(
+            1
+            for row in sheets[master_name]
+            for c in row[1:]
+            if _is_wholesale_price(c)
+        )
+        if master_prices >= 10:
+            for n, v in lower.items():
+                if v == "master" or v == "markup":
+                    continue
+                if (
+                    v.startswith("sheet")
+                    or v == "title page"
+                    or "product size" in v
+                    or re.search(r"^t\s*price|^cy\s*price", v)
+                ):
+                    skip.add(n)
+                if v == "pricing":
+                    pricing_has = any(
+                        _is_wholesale_price(c)
+                        for row in sheets[n]
+                        for c in row[1:]
+                    )
+                    if not pricing_has:
+                        skip.add(n)
+        else:
+            # Markup-only Master — do not treat Sheet* as duplicates
+            skip.add(master_name)
     # Drop Internet / Drop Ship shipping charts
     for n, v in lower.items():
         if re.search(r"internet\s*pricing|drop\s*ship", v):
@@ -1103,6 +1417,22 @@ def process_viztech_workbook(
             skipped.append(name)
             continue
         if _unfinished_only_sheet(rows):
+            skipped.append(name)
+            continue
+        # Hillside: skip INDEX / approximate finishing-cost sheets (page #s / add-ons)
+        head = " ".join(
+            _cell_str(c)
+            for row in rows[:6]
+            for c in row
+            if _cell_str(c)
+        ).lower()
+        if re.match(r"^\s*index\b", head) or head.strip().startswith("index"):
+            skipped.append(name)
+            continue
+        if re.search(
+            r"approximate\s+(?:unfinished\s+and\s+)?(?:finished\s+)?(?:prices|finishing\s+costs?)",
+            head,
+        ):
             skipped.append(name)
             continue
         before = len(out)

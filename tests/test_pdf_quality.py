@@ -4,6 +4,7 @@ import pytest
 
 from scripts.pdf_quality_check import (
     assert_pdfs_quality,
+    find_add_upcharge_issues,
     find_customer_contact_in_pdf,
     find_dealer_terms_in_pdf,
     find_pdf_markup_artifacts,
@@ -63,3 +64,12 @@ def test_no_builder_contact_or_billing(pdf_paths: list[Path]) -> None:
             continue
         bad.extend(find_customer_contact_in_pdf(p))
     assert not bad, "\n".join(bad)
+
+
+def test_no_bare_decimal_or_trailing_add_upcharges(pdf_paths: list[Path]) -> None:
+    bad: list[str] = []
+    for p in pdf_paths:
+        if p.name in QUALITY_EXEMPT_PDFS:
+            continue
+        bad.extend(find_add_upcharge_issues(p))
+    assert not bad, "\n".join(bad[:40])

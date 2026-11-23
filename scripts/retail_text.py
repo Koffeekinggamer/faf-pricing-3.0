@@ -19,10 +19,42 @@ PERCENT_RE = re.compile(r"\d+(?:\.\d+)?\s*%")
 
 NOT_AVAILABLE = "—"
 
+# Bare Excel percent fractions written into prose (e.g. "add 0.1 of regular price").
+ADD_FRACTION_OF_PRICE_RE = re.compile(
+    r"(?i)\b(add)\s+(0\.\d+)\s+(of|to)\s+(regular\s+price)"
+)
+
+
+def is_percent_token(value: Any) -> bool:
+    """True for display tokens like '4%' produced from Excel percent formats."""
+    return isinstance(value, str) and bool(re.fullmatch(r"\d+(?:\.\d+)?%", value.strip()))
+
+
+def excel_percent_to_display(value: float) -> str:
+    """Render an Excel percent fraction (0.04) as '4%' without applying a multiplier."""
+    pct = float(value) * 100.0
+    if abs(pct - round(pct)) < 1e-6:
+        return f"{int(round(pct))}%"
+    text = f"{pct:.4f}".rstrip("0").rstrip(".")
+    return f"{text}%"
+
+
+def rewrite_add_fraction_as_percent(text: str) -> str:
+    """Turn 'add 0.1 of regular price' into 'add 10% of regular price'."""
+
+    def _repl(m: re.Match[str]) -> str:
+        frac = float(m.group(2))
+        return f"{m.group(1)} {excel_percent_to_display(frac)} {m.group(3)} {m.group(4)}"
+
+    return ADD_FRACTION_OF_PRICE_RE.sub(_repl, text)
+
 
 def retail_price_cell(value: Any, multiplier: float) -> str:
     if value is None or value == "":
         return NOT_AVAILABLE
+    # Percent display tokens must never be multiplied as wholesale dollars.
+    if is_percent_token(value):
+        return str(value).strip()
     if isinstance(value, (int, float)) and not isinstance(value, bool):
         if value == 0:
             return NOT_AVAILABLE
@@ -32,6 +64,8 @@ def retail_price_cell(value: Any, multiplier: float) -> str:
         return NOT_AVAILABLE
     if text == "0":
         return NOT_AVAILABLE
+    if is_percent_token(text):
+        return text
     if "$" in text:
         return transform_text_prices(text, multiplier)
     try:
@@ -55,10 +89,18 @@ def sanitize_retail_text(text: str, multiplier: float, *, allow_percent: bool = 
     if not cleaned:
         return ""
     text = cleaned
+    text = rewrite_add_fraction_as_percent(text)
+
+    def _scrub_approx(s: str) -> str:
+        s = re.sub(r"\bapproximately\b", "about", s, flags=re.I)
+        s = re.sub(r"\bapproximate\b", "estimated", s, flags=re.I)
+        s = re.sub(r"\bapprox\.?\b", "", s, flags=re.I)
+        return re.sub(r"\s{2,}", " ", s).strip()
+
     if allow_percent and PERCENT_RE.search(text) and "$" not in text:
         t = WHOLESALE_RE.sub("", text)
         t = DEALER_RE.sub("", t)
-        t = re.sub(r"\s{2,}", " ", t).strip()
+        t = _scrub_approx(t)
         assert_no_approx(t)
         return t
     if FOB_RE.search(text):
@@ -66,7 +108,8 @@ def sanitize_retail_text(text: str, multiplier: float, *, allow_percent: bool = 
     t = WHOLESALE_RE.sub("", text)
     t = PREFERRED_RE.sub("", t)
     t = DEALER_RE.sub("", t)
-    t = re.sub(r"\s{2,}", " ", t).strip()
+    # Customer PDFs must not contain "approx"; rewrite dimension hedges.
+    t = _scrub_approx(t)
     if "$" in t:
         t = transform_text_prices(t, multiplier)
     assert_no_approx(t)
