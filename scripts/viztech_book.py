@@ -668,6 +668,50 @@ def _row_has_add_label(row: list) -> bool:
     )
 
 
+def _row_has_embedded_dollar_text(row: list) -> bool:
+    """True when a string cell already carries $ amounts (Hillside seat notes)."""
+    return any(isinstance(c, str) and "$" in c for c in row if c not in (None, ""))
+
+
+def _add_label_texts(row: list) -> list[str]:
+    return [
+        c.strip()
+        for c in row
+        if isinstance(c, str) and c.strip() and re.search(r"\badds?\b", c, re.I)
+    ]
+
+
+def _should_use_add_upcharge_transform(row: list) -> bool:
+    """Route only sparse percent/dollar Add upcharges — not prose notes or wood grids."""
+    if not _row_has_add_label(row):
+        return False
+    # Multi-line notes already contain wholesale $ text; leave for sanitize/prose.
+    if _row_has_embedded_dollar_text(row):
+        return False
+    has_pct = any(
+        _is_percent_token(c)
+        or (
+            isinstance(c, (int, float))
+            and not isinstance(c, bool)
+            and 0 < float(c) < 1
+        )
+        for c in row
+    )
+    wholesales = [c for c in row if _is_wholesale_price(c)]
+    if has_pct:
+        return True
+    if not wholesales:
+        return False
+    labels = _add_label_texts(row)
+    # Hillside-style mirrored two-panel rows duplicate the same Add label.
+    if len(labels) >= 2 and len({re.sub(r"\s+", " ", x) for x in labels}) == 1:
+        return False
+    # Wide wood-price grids (Hardwood XX's across species) keep normal column layout.
+    if len(wholesales) >= 3:
+        return False
+    return True
+
+
 def _transform_add_upcharge_row(
     row: list,
     multiplier: float,
@@ -678,6 +722,7 @@ def _transform_add_upcharge_row(
     """Keep values beside Add labels; percent tokens are never multiplied."""
     label_parts: list[str] = []
     values: list[str] = []
+    seen_labels: set[str] = set()
     for c in row:
         if c in (None, ""):
             continue
@@ -703,8 +748,13 @@ def _transform_add_upcharge_row(
             continue
         if isinstance(c, str):
             t = sanitize_retail_text(c, multiplier)
-            if t:
-                label_parts.append(t)
+            if not t:
+                continue
+            key = re.sub(r"\s+", " ", t).casefold()
+            if key in seen_labels:
+                continue
+            seen_labels.add(key)
+            label_parts.append(t)
     if not label_parts or not values:
         return []
     label = clean_pdf_plain_text(" ".join(label_parts))
@@ -1034,17 +1084,7 @@ def _process_sheet(
         if _is_options_column_header_row(row):
             i += 1
             continue
-        has_add = _row_has_add_label(row)
-        has_add_value = any(
-            _is_percent_token(c)
-            or (
-                isinstance(c, (int, float))
-                and not isinstance(c, bool)
-                and (0 < float(c) < 1 or _is_wholesale_price(c))
-            )
-            for c in row
-        )
-        if has_add and has_add_value:
+        if _should_use_add_upcharge_transform(row):
             cells = _transform_add_upcharge_row(
                 row, multiplier, spots=spots, item_hint=item_hint
             )
@@ -1052,20 +1092,48 @@ def _process_sheet(
                 out.append(ProcessedRow(RowKind.PROSE, cells[:4]))
                 i += 1
                 continue
-        if has_add and not has_add_value:
-            # Source has an Add label with no adjacent value — omit rather than
-            # emit a trailing "Add" with nothing after it.
+        # Pure Add label with no adjacent value and no embedded $ — omit so the
+        # PDF never ends a line with a bare "Add".
+        if (
+            _row_has_add_label(row)
+            and not _row_has_embedded_dollar_text(row)
+            and not any(
+                _is_percent_token(c) or _is_wholesale_price(c) for c in row
+            )
+            and not any(
+                isinstance(c, (int, float))
+                and not isinstance(c, bool)
+                and 0 < float(c) < 1
+                for c in row
+            )
+        ):
             i += 1
             continue
         label_early, _ = _row_item_label(row)
-        if _is_option_note_row(row, label_early):
-            prose = _strip_contact_pricing_phrases(
-                sanitize_retail_text(joined, multiplier)
-            )
-            if prose and len(prose) > 12 and not is_dealer_terms_text(prose):
-                # Strip accidental multiplied add-on amounts from option notes when
-                # the note already describes the add in words; keep short labels.
-                out.append(ProcessedRow(RowKind.PROSE, [prose[:200]]))
+        # Option notes are prose with embedded $ text. Rows that also carry
+        # numeric wholesale cells (Hardwood XX Add grids) must keep the price path.
+        if _is_option_note_row(row, label_early) and not any(
+            _is_wholesale_price(c) for c in row
+        ):
+            # Keep each note cell (Hillside two-panel books); do not join+truncate
+            # into a single 200-char blob that drops seat/Double-X lines.
+            note_cells: list[str] = []
+            seen_notes: set[str] = set()
+            for c in row:
+                if not isinstance(c, str) or not c.strip():
+                    continue
+                prose = _strip_contact_pricing_phrases(
+                    sanitize_retail_text(c, multiplier)
+                )
+                if not prose or len(prose) <= 12 or is_dealer_terms_text(prose):
+                    continue
+                key = re.sub(r"\s+", " ", prose).casefold()
+                if key in seen_notes:
+                    continue
+                seen_notes.add(key)
+                note_cells.append(prose)
+            if note_cells:
+                out.append(ProcessedRow(RowKind.PROSE, note_cells[:4]))
             i += 1
             continue
         finish_layout = _detect_finish_cost_layout(rows, i)
@@ -1093,7 +1161,27 @@ def _process_sheet(
                 i += 1
                 continue
         price_cols = _infer_price_cols(rows, i)
-        cells = _transform_row_prices(row, multiplier, price_cols or range(len(row)), spots=spots, item_hint=item_hint)
+        cells = _transform_row_prices(
+            row, multiplier, price_cols or range(len(row)), spots=spots, item_hint=item_hint
+        )
+        if not cells and any(_is_wholesale_price(c) for c in row):
+            # Inferred wood cols can miss Add-upcharge rows (Hillside Hardwood XX
+            # mirrored panels). Fall back to actual wholesale positions; prefer the
+            # left panel when the same Add label is duplicated.
+            nums = [j for j, c in enumerate(row) if _is_wholesale_price(c)]
+            add_idxs = [
+                j
+                for j, c in enumerate(row)
+                if isinstance(c, str) and re.search(r"\badds?\b", c, re.I)
+            ]
+            if len(add_idxs) >= 2:
+                left = [j for j in nums if j < add_idxs[1]]
+                if left:
+                    nums = left
+            if nums:
+                cells = _transform_row_prices(
+                    row, multiplier, nums, spots=spots, item_hint=item_hint
+                )
         if cells:
             out.append(ProcessedRow(RowKind.WIDE, cells))
             i += 1

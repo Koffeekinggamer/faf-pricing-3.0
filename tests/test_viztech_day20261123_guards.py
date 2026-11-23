@@ -138,3 +138,95 @@ def test_day20261123_pdfs_have_no_add_upcharge_issues():
             continue
         bad.extend(find_add_upcharge_issues(p))
     assert not bad, "\n".join(bad[:40])
+
+
+def test_hillside_embedded_dollar_add_notes_not_dropped():
+    """Prose 'Seat - Add $10' cells must keep multiplied $ lines (not treated as empty Add)."""
+    rows = [
+        [
+            "Profile Comfort Seat - Add $10\nFabrice Seat - Add $15\nLeather Seat - Add $45\n"
+            "Cherry, Hickory, Rustic Hickory, Rustic QSWO, Elm Seat - Add $10\n"
+            "QSWO, Rustic Walnut Seat - Add $20",
+            "Walnut Seat -  Add $35\nDouble X Fabric Seat & Back - Add $50\n"
+            "Double X Leather Seat & Back - Add $110",
+        ],
+        ["Hardwood XX's in Back (for Double X Chair) Add", 15, 18, 20, 23, 26],
+        ["Options", "Add"],
+    ]
+    out = _process_sheet("Sheet3", rows, multiplier=2.7, spots=[])
+    text = "\n".join(" ".join(c for c in r.cells if c) for r in out)
+    for needle in (
+        "Profile Comfort Seat - Add $27",
+        "Fabrice Seat - Add $41",
+        "Leather Seat - Add $122",
+        "Cherry, Hickory, Rustic Hickory, Rustic QSWO, Elm Seat - Add $27",
+        "QSWO, Rustic Walnut Seat - Add $54",
+        "Walnut Seat - Add $95",
+        "Double X Fabric Seat & Back - Add $135",
+        "Double X Leather Seat & Back - Add $297",
+        "Hardwood XX's in Back (for Double X Chair) Add $41",
+    ):
+        assert needle in text, needle
+    assert "Options" not in text
+    assert text.count("Hardwood XX's in Back") == 1
+
+
+def test_day20261123_dollar_line_counts_vs_source(tmp_path=None):
+    """Each builder's processed $ line count must not drop vs source value-bearing rows."""
+    from pathlib import Path
+
+    from scripts.viztech_book import load_workbook_sheets, process_viztech_workbook
+
+    sources = Path("/tmp/day20261123/day20261123")
+    if not sources.is_dir():
+        return  # upload not present in CI; synthetic coverage above still runs
+
+    builders = [
+        ("Hillside Chair", "hillside-chair__HC_2026_Pricelist_0426-1.xlsx"),
+        (
+            "Hilltop Hickory Furniture",
+            "hilltop-hickory-furniture__HHF_2026_Pricelist_0326-CompressedImages.xlsx",
+        ),
+        (
+            "Hochstetler Lawn Furniture",
+            "hochstetler-lawn-furniture__HLF_2027_Pricelist_1026.xlsx",
+        ),
+        (
+            "Hogback Design And Finishing",
+            "hogback-design-and-finishing__HDF_2026_Pricelist_0326-1.xlsx",
+        ),
+        ("Hoosier Crafts", "hoosier-crafts__HC_2026_Pricelist_0326.xlsx"),
+    ]
+
+    def source_price_rows(path: Path) -> int:
+        sheets = load_workbook_sheets(path)
+        n = 0
+        for rows in sheets.values():
+            for row in rows:
+                if any(
+                    isinstance(c, (int, float))
+                    and not isinstance(c, bool)
+                    and 1 <= float(c) <= 250_000
+                    for c in row
+                ):
+                    n += 1
+                elif any(isinstance(c, str) and "$" in c for c in row):
+                    n += 1
+        return n
+
+    for name, fname in builders:
+        path = sources / fname
+        if not path.is_file():
+            continue
+        src = source_price_rows(path)
+        res = process_viztech_workbook(path, multiplier=2.7, builder_name=name)
+        out_dollar = sum(1 for r in res.rows if any("$" in str(c) for c in r.cells))
+        # Allow some filtering (unfinished/retail sheets) but never a collapse.
+        assert out_dollar >= max(10, int(src * 0.35)), (
+            f"{name}: $ lines {out_dollar} vs source price rows {src}"
+        )
+        if name == "Hillside Chair":
+            text = "\n".join(" ".join(map(str, r.cells)) for r in res.rows)
+            assert "Profile Comfort Seat - Add $27" in text
+            assert "Leather Seat - Add $122" in text
+            assert "Double X Leather Seat & Back - Add $297" in text
