@@ -55,10 +55,16 @@ def sanitize_retail_text(text: str, multiplier: float, *, allow_percent: bool = 
     if not cleaned:
         return ""
     text = cleaned
+    def _scrub_approx(s: str) -> str:
+        s = re.sub(r"\bapproximately\b", "about", s, flags=re.I)
+        s = re.sub(r"\bapproximate\b", "estimated", s, flags=re.I)
+        s = re.sub(r"\bapprox\.?\b", "", s, flags=re.I)
+        return re.sub(r"\s{2,}", " ", s).strip()
+
     if allow_percent and PERCENT_RE.search(text) and "$" not in text:
         t = WHOLESALE_RE.sub("", text)
         t = DEALER_RE.sub("", t)
-        t = re.sub(r"\s{2,}", " ", t).strip()
+        t = _scrub_approx(t)
         assert_no_approx(t)
         return t
     if FOB_RE.search(text):
@@ -66,7 +72,8 @@ def sanitize_retail_text(text: str, multiplier: float, *, allow_percent: bool = 
     t = WHOLESALE_RE.sub("", text)
     t = PREFERRED_RE.sub("", t)
     t = DEALER_RE.sub("", t)
-    t = re.sub(r"\s{2,}", " ", t).strip()
+    # Customer PDFs must not contain "approx"; rewrite dimension hedges.
+    t = _scrub_approx(t)
     if "$" in t:
         t = transform_text_prices(t, multiplier)
     assert_no_approx(t)
