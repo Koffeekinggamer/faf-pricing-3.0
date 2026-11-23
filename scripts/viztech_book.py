@@ -12,7 +12,13 @@ import openpyxl
 from scripts.dealer_book import ProcessedRow, RowKind, collapse_blank_rows, row_is_blank
 from scripts.dealer_terms import is_builder_contact_text, is_dealer_terms_text
 from scripts.pdf_plain_text import clean_pdf_plain_text
-from scripts.retail_text import forbidden_phrases, retail_price_cell, sanitize_retail_text
+from scripts.retail_text import (
+    excel_percent_to_display,
+    forbidden_phrases,
+    is_percent_token,
+    retail_price_cell,
+    sanitize_retail_text,
+)
 
 try:
     import xlrd
@@ -200,6 +206,8 @@ def _cell_str(c: Any) -> str:
 def _is_wholesale_price(val: Any) -> bool:
     if isinstance(val, str) and val.strip().upper() in {"#N/A", "N/A", "NA", "#NA"}:
         return False
+    if is_percent_token(val):
+        return False
     if not isinstance(val, (int, float)) or isinstance(val, bool):
         return False
     v = float(val)
@@ -210,13 +218,50 @@ def _is_na_cell(val: Any) -> bool:
     return isinstance(val, str) and val.strip().upper() in {"#N/A", "N/A", "NA", "#NA"}
 
 
+def _is_percent_token(val: Any) -> bool:
+    return is_percent_token(val)
+
+
+def _excel_format_is_percent(number_format: str | None) -> bool:
+    if not number_format:
+        return False
+    # Ignore date/time formats that can contain stray %
+    fmt = str(number_format)
+    if re.search(r"[ymdhs]", fmt, re.I) and "%" not in fmt.replace("%%", ""):
+        return False
+    return "%" in fmt.replace("%%", "")
+
+
 def _load_xlsx_sheets(path: Path) -> dict[str, list[list]]:
-    wb = openpyxl.load_workbook(path, data_only=True, read_only=True)
+    """Load values; convert percent-formatted numerics to 'N%' display tokens."""
+    wb_val = openpyxl.load_workbook(path, data_only=True, read_only=True)
+    wb_fmt = openpyxl.load_workbook(path, data_only=False, read_only=True)
     out: dict[str, list[list]] = {}
-    for name in wb.sheetnames:
-        ws = wb[name]
-        out[name] = [list(r) for r in ws.iter_rows(values_only=True)]
-    wb.close()
+    for name in wb_val.sheetnames:
+        ws_v = wb_val[name]
+        ws_f = wb_fmt[name] if name in wb_fmt.sheetnames else None
+        rows: list[list] = []
+        fmt_rows = ws_f.iter_rows() if ws_f is not None else None
+        for r_v in ws_v.iter_rows():
+            fmt_row = next(fmt_rows) if fmt_rows is not None else None
+            row: list = []
+            for idx, c_v in enumerate(r_v):
+                v = c_v.value
+                fmt = ""
+                if fmt_row is not None and idx < len(fmt_row):
+                    fmt = fmt_row[idx].number_format or ""
+                if (
+                    isinstance(v, (int, float))
+                    and not isinstance(v, bool)
+                    and _excel_format_is_percent(fmt)
+                ):
+                    row.append(excel_percent_to_display(float(v)))
+                else:
+                    row.append(v)
+            rows.append(row)
+        out[name] = rows
+    wb_val.close()
+    wb_fmt.close()
     return out
 
 
@@ -602,6 +647,76 @@ def _is_option_note_row(row: list, label: str) -> bool:
     return False
 
 
+def _is_options_column_header_row(row: list) -> bool:
+    """Hogback-style 'Standard Features / Options / Add' header with no values."""
+    texts = [
+        re.sub(r":\s*$", "", str(c).strip().lower())
+        for c in row
+        if isinstance(c, str) and str(c).strip()
+    ]
+    if not texts:
+        return False
+    if any(_is_wholesale_price(c) or _is_percent_token(c) for c in row):
+        return False
+    allowed = {"standard features", "options", "add", "features", "option"}
+    return all(t in allowed for t in texts) and any(t == "add" for t in texts)
+
+
+def _row_has_add_label(row: list) -> bool:
+    return any(
+        isinstance(c, str) and re.search(r"\badds?\b", c, re.I) for c in row if c not in (None, "")
+    )
+
+
+def _transform_add_upcharge_row(
+    row: list,
+    multiplier: float,
+    *,
+    spots: list[SpotSample],
+    item_hint: str,
+) -> list[str]:
+    """Keep values beside Add labels; percent tokens are never multiplied."""
+    label_parts: list[str] = []
+    values: list[str] = []
+    for c in row:
+        if c in (None, ""):
+            continue
+        if _is_percent_token(c):
+            values.append(str(c).strip())
+            continue
+        if isinstance(c, (int, float)) and not isinstance(c, bool):
+            v = float(c)
+            if 0 < v < 1:
+                # Fraction without a captured format — still show as percent near Add
+                values.append(excel_percent_to_display(v))
+            elif _is_wholesale_price(c):
+                retail = retail_price_cell(c, multiplier)
+                values.append(retail)
+                if len(spots) < 3:
+                    spots.append(
+                        SpotSample(
+                            item=(item_hint or "add")[:80],
+                            wholesale=v,
+                            retail=retail,
+                        )
+                    )
+            continue
+        if isinstance(c, str):
+            t = sanitize_retail_text(c, multiplier)
+            if t:
+                label_parts.append(t)
+    if not label_parts or not values:
+        return []
+    label = clean_pdf_plain_text(" ".join(label_parts))
+    label = _strip_contact_pricing_phrases(label)
+    if not label:
+        return []
+    joined_vals = " ".join(values)
+    if re.search(r"\badd\s*$", label, re.I):
+        return [f"{label} {joined_vals}"]
+    return [f"{label} Add {joined_vals}"]
+
+
 def _transform_finish_cost_row(
     row: list,
     layout: FinishCostLayout,
@@ -914,6 +1029,32 @@ def _process_sheet(
             i += 1
             continue
         if re.search(r"how\s+to\s+price\s+beverage|take\s+the\s+base\s+price\s+in\s+column", joined, re.I):
+            i += 1
+            continue
+        if _is_options_column_header_row(row):
+            i += 1
+            continue
+        has_add = _row_has_add_label(row)
+        has_add_value = any(
+            _is_percent_token(c)
+            or (
+                isinstance(c, (int, float))
+                and not isinstance(c, bool)
+                and (0 < float(c) < 1 or _is_wholesale_price(c))
+            )
+            for c in row
+        )
+        if has_add and has_add_value:
+            cells = _transform_add_upcharge_row(
+                row, multiplier, spots=spots, item_hint=item_hint
+            )
+            if cells:
+                out.append(ProcessedRow(RowKind.PROSE, cells[:4]))
+                i += 1
+                continue
+        if has_add and not has_add_value:
+            # Source has an Add label with no adjacent value — omit rather than
+            # emit a trailing "Add" with nothing after it.
             i += 1
             continue
         label_early, _ = _row_item_label(row)

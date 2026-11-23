@@ -22,6 +22,39 @@ BBOX_TOLERANCE_PT = 3.0
 # Pass-through scanned books that keep original vendor wording/layout.
 QUALITY_EXEMPT_PDFS = frozenset({"Smith_Brothers.pdf"})
 
+# Older sheets baked before percent/Add guards; cannot regenerate without sources.
+# Still scanned for markup/dealer/contact; exempt only from Add/percent-upcharge rules.
+ADD_UPCHARGE_EXEMPT_PDFS = frozenset(
+    {
+        "Brookside_Home_Furnishings.pdf",  # edge fractions like "Add 0.3", not % cells
+        "D_N_Wood_Design.pdf",  # prose "…, add" without a source value
+        "Indian_Trail_Furniture.pdf",  # "add 0.1 of regular price" baked in
+        "Lamb_Woodworking.pdf",  # specie fraction grid "Add 0.05"
+    }
+)
+
+# Bare decimal after Add (e.g. "Add 0.04" instead of "Add 4%").
+BARE_DECIMAL_ADD_RE = re.compile(r"(?i)\bAdd\s+0\.\d+\b")
+
+# Upcharge-style line that ends with Add and no following value.
+TRAILING_ADD_RE = re.compile(
+    r"(?i)"
+    r"(?:"
+    r"(?:^|\b)(?:Standard Features:?\s*)?Options:?\s*Add\s*$"
+    r"|"
+    r"(?:^|\b)(?:All\s+)?(?:Tropical|Premium|Standard)\s+Colors?\b.*\bAdd\s*$"
+    r"|"
+    r"(?:tropical|premium|leather|fabric|crypton|revolution|castors?|"
+    r"nailhead|wagonwheel|flat\s+arms?|pegs?|hardwood|glaze)"
+    r".{0,80},\s*Add\s*$"
+    r"|"
+    r"(?:^|\b)(?:Seat|Back|Arms?|Fabric(?:\s+Seat|\s+Back)?|"
+    r"Leather(?:\s+Seat|\s+Back)?|For\s+Arms?),\s*Add\s*$"
+    r"|"
+    r"(?:^|\b).{0,40}\bColor(?:s)?,\s*Add\s*$"
+    r")"
+)
+
 
 def _page_right_limit(page) -> float:
     return float(page.width) - RIGHT_MARGIN_PT + BBOX_TOLERANCE_PT
@@ -82,6 +115,29 @@ def find_customer_contact_in_pdf(pdf_path: Path) -> list[str]:
     return issues
 
 
+def find_add_upcharge_issues(pdf_path: Path) -> list[str]:
+    """Flag trailing 'Add' with no value, or bare decimal <1 used as an upcharge."""
+    if pdf_path.name in QUALITY_EXEMPT_PDFS or pdf_path.name in ADD_UPCHARGE_EXEMPT_PDFS:
+        return []
+    issues: list[str] = []
+    with pdfplumber.open(pdf_path) as pdf:
+        for n, page in enumerate(pdf.pages, start=1):
+            text = page.extract_text() or ""
+            for line in text.splitlines():
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                if BARE_DECIMAL_ADD_RE.search(stripped):
+                    issues.append(
+                        f"{pdf_path.name} p{n}: bare decimal upcharge {stripped!r}"
+                    )
+                elif TRAILING_ADD_RE.search(stripped):
+                    issues.append(
+                        f"{pdf_path.name} p{n}: trailing Add with no value {stripped!r}"
+                    )
+    return issues
+
+
 def assert_pdfs_quality(paths: list[Path]) -> None:
     all_issues: list[str] = []
     for p in paths:
@@ -91,6 +147,7 @@ def assert_pdfs_quality(paths: list[Path]) -> None:
         all_issues.extend(find_text_past_right_margin(p))
         all_issues.extend(find_dealer_terms_in_pdf(p))
         all_issues.extend(find_customer_contact_in_pdf(p))
+        all_issues.extend(find_add_upcharge_issues(p))
     if all_issues:
         sample = "\n".join(all_issues[:50])
         extra = (
