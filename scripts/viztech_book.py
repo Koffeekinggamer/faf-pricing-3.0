@@ -15,9 +15,11 @@ from scripts.pdf_plain_text import clean_pdf_plain_text
 from scripts.retail_text import (
     excel_percent_to_display,
     forbidden_phrases,
+    is_call_for_pricing_cell,
     is_percent_token,
     retail_price_cell,
     sanitize_retail_text,
+    strip_call_for_contact_phrases,
 )
 
 try:
@@ -50,31 +52,9 @@ RETAIL_MARKUP_COL_RE = re.compile(
     re.I,
 )
 SEALED_PAINTED_RE = re.compile(r"sealed\s*/\s*painted|sealed\s+and\s+painted", re.I)
-# Option / note lines: drop contact-us / call-for-pricing clauses; keep the rest.
-CONTACT_PRICING_PHRASE_RE = re.compile(
-    r"(?:^|[;\s]+)"
-    r"(?:"
-    r"contact\s+us\s+for\s+pricing(?:\s+on\s+[^.;]*)?|"
-    r"call\s+(?:us\s+)?for\s+pricing(?:\s+on\s+[^.;]*)?"
-    r")"
-    r"\.?",
-    re.I,
-)
-
-
 def _strip_contact_pricing_phrases(text: str) -> str:
     """Remove 'contact us' / 'call for pricing' clauses from notes; keep other wording."""
-    if not text or not str(text).strip():
-        return ""
-    t = CONTACT_PRICING_PHRASE_RE.sub(" ", str(text))
-    t = re.sub(r"\s{2,}", " ", t).strip()
-    t = re.sub(r"^[;\s,.-]+|[;\s,.-]+$", "", t).strip()
-    # Restore a trailing period when the kept clause still looks like a sentence.
-    if t and not t.endswith((".", "!", "?", '"', "'")) and re.search(
-        r"\b(?:width|size|sizes|only|offered)\b", t, re.I
-    ):
-        t = t + "."
-    return t
+    return strip_call_for_contact_phrases(text)
 
 
 def normalize_builder_name(name: str) -> str:
@@ -896,6 +876,10 @@ def _transform_row_prices(
         if isinstance(v, str) and v.strip().lower() in {"n/a", "na", "-", "—", "–"}:
             cells.append("")
             continue
+        if is_call_for_pricing_cell(v):
+            # Leave blank — do not invent a retail number for call-for cells.
+            cells.append("")
+            continue
         if _is_wholesale_price(v):
             wholesale = float(v)
             retail = retail_price_cell(v, multiplier)
@@ -1213,9 +1197,12 @@ def _process_sheet(
                 prose_cells.append(t)
         joined_prose = " ".join(prose_cells)
         # Keep normal long prose, or short leftovers after contact-phrase strip
-        # (e.g. 'Only offered in 60" width.').
+        # (e.g. 'Only offered in 60" width.'), or section labels like
+        # 'Rectangle Glass Tops:' after a call-for parenthetical is removed.
         keep_prose = len(joined_prose) > 40 or (
             prose_before_len > len(joined_prose) and len(joined_prose) > 12
+        ) or any(
+            len(c) > 8 and c.rstrip().endswith(":") for c in prose_cells
         )
         if (
             prose_cells
@@ -1311,6 +1298,32 @@ def luxhome_has_finished_products(path: Path) -> bool:
     return False
 
 
+def _markup_calculator_without_finished(rows: list[list]) -> bool:
+    """True for HW Chair-style markup calculators that expose unfinished bases only."""
+    head = " ".join(
+        _cell_str(c) for row in rows[:6] for c in row if _cell_str(c)
+    ).lower()
+    if not re.search(r"markup\s*calculator", head):
+        return False
+    # Optional finishing adder ≠ finished price columns
+    has_finished_col = False
+    for row in rows[:8]:
+        for c in row:
+            if not isinstance(c, str):
+                continue
+            s = c.lower().strip()
+            if re.search(r"\bunfinished\b", s):
+                continue
+            if re.search(r"cost\s+of\s+finishing|nat\.?\s*finish", s):
+                continue
+            if re.search(r"\bfinished\b|\bfin\.?\b", s):
+                has_finished_col = True
+                break
+        if has_finished_col:
+            break
+    return not has_finished_col
+
+
 def _prefer_wholesale_sheet_names(
     sheets: dict[str, list[list]],
 ) -> set[str]:
@@ -1324,6 +1337,16 @@ def _prefer_wholesale_sheet_names(
             if re.search(r"\bwholesale\b", v):
                 continue
             if re.search(r"price\s*list", v) and not re.search(r"\bwholesale\b", v):
+                skip.add(n)
+    # Hoosier Poly: keep plain "2026 Prices", drop "2026 Prices with Markup"
+    plain_prices = [
+        n
+        for n, v in lower.items()
+        if re.search(r"\bprices?\b", v) and not re.search(r"markup", v)
+    ]
+    if plain_prices:
+        for n, v in lower.items():
+            if re.search(r"prices?\s+with\s+markup|\bwith\s+markup\b", v):
                 skip.add(n)
     # Slab workbooks: Prices is often formula-only (empty data_only); Master holds wholesale
     if any(v == "prices" for v in lower.values()) and any(v == "master" for v in lower.values()):
@@ -1398,6 +1421,7 @@ def process_viztech_workbook(
     skipped: list[str] = []
     out: list[ProcessedRow] = []
     has_grid = False
+    markup_calc_only = False
     prefer_skip = _prefer_wholesale_sheet_names(sheets)
 
     for name, rows in sheets.items():
@@ -1418,6 +1442,11 @@ def process_viztech_workbook(
             continue
         if _unfinished_only_sheet(rows):
             skipped.append(name)
+            continue
+        if _markup_calculator_without_finished(rows):
+            # HW Chair Catalog: unfinished bases + optional finish adder, no finished grid
+            skipped.append(name)
+            markup_calc_only = True
             continue
         # Hillside: skip INDEX / approximate finishing-cost sheets (page #s / add-ons)
         head = " ".join(
@@ -1441,7 +1470,13 @@ def process_viztech_workbook(
             has_grid = True
 
     if not has_grid:
-        return ViztechBuildResult([], spots, skipped, [f"No price grid in {path.name}"])
+        reason = f"No price grid in {path.name}"
+        if markup_calc_only:
+            reason = (
+                f"No finished prices (markup calculator / unfinished bases only) "
+                f"in {path.name}"
+            )
+        return ViztechBuildResult([], spots, skipped, [reason])
 
     return ViztechBuildResult(collapse_blank_rows(out), spots, skipped, [])
 

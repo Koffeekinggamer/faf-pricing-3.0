@@ -33,6 +33,42 @@ ADD_UPCHARGE_EXEMPT_PDFS = frozenset(
     }
 )
 
+# Older sheets with baked-in call-for / contact wording; regenerate when sources return.
+CALL_FOR_CONTACT_EXEMPT_PDFS = frozenset(
+    {
+        "AAA_Furniture.pdf",
+        "AJ_s_Furniture.pdf",
+        "A_L_Furniture_OH.pdf",
+        "Arista_Wood.pdf",
+        "Ashery_Oak.pdf",
+        "Barkman_Furniture.pdf",
+        "Berlin_Woodworking.pdf",
+        "Blu_Furniture.pdf",
+        "Brookside_Home_Furnishings.pdf",
+        "Buss_Woodcraft.pdf",
+        "Cloverleaf_Woodworking.pdf",
+        "Country_Cupola.pdf",
+        "Country_Side_Rustic_Log_Furniture.pdf",
+        "Crystal_Valley_Hardwoods.pdf",
+        "D_N_Wood_Design.pdf",
+        "Dry_Creek_Furniture.pdf",
+        "Dutch_Creek_Design.pdf",
+        "FN_Chairs.pdf",
+        "Fighting_Creek_Furniture.pdf",
+        "Five_Star_Tables.pdf",
+        "Frog_Pond_Furniture.pdf",
+        "Heritage_Wood_Designs.pdf",
+        "Indian_Trail_Furniture.pdf",
+        "JF_Hardwood_Designs.pdf",
+        "J_Troyer_and_Co.pdf",
+        "Millcraft.pdf",
+        "Smith_Brothers.pdf",
+        "Townline_Furniture.pdf",
+    }
+)
+
+CUSTOMER_WORDING_RE = re.compile(r"call for|contact|wholesale|dealer", re.I)
+
 # Bare decimal after Add (e.g. "Add 0.04" instead of "Add 4%").
 BARE_DECIMAL_ADD_RE = re.compile(r"(?i)\bAdd\s+0\.\d+\b")
 
@@ -115,6 +151,25 @@ def find_customer_contact_in_pdf(pdf_path: Path) -> list[str]:
     return issues
 
 
+def find_call_for_contact_wording(pdf_path: Path) -> list[str]:
+    """Fail when PDF text matches /call for|contact|wholesale|dealer/i."""
+    if pdf_path.name in QUALITY_EXEMPT_PDFS or pdf_path.name in CALL_FOR_CONTACT_EXEMPT_PDFS:
+        return []
+    issues: list[str] = []
+    with pdfplumber.open(pdf_path) as pdf:
+        for n, page in enumerate(pdf.pages, start=1):
+            for line in (page.extract_text() or "").splitlines():
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                m = CUSTOMER_WORDING_RE.search(stripped)
+                if m:
+                    issues.append(
+                        f"{pdf_path.name} p{n}: forbidden wording {m.group()!r} in {stripped!r}"
+                    )
+    return issues
+
+
 def find_add_upcharge_issues(pdf_path: Path) -> list[str]:
     """Flag trailing 'Add' with no value, or bare decimal <1 used as an upcharge."""
     if pdf_path.name in QUALITY_EXEMPT_PDFS or pdf_path.name in ADD_UPCHARGE_EXEMPT_PDFS:
@@ -147,6 +202,7 @@ def assert_pdfs_quality(paths: list[Path]) -> None:
         all_issues.extend(find_text_past_right_margin(p))
         all_issues.extend(find_dealer_terms_in_pdf(p))
         all_issues.extend(find_customer_contact_in_pdf(p))
+        all_issues.extend(find_call_for_contact_wording(p))
         all_issues.extend(find_add_upcharge_issues(p))
     if all_issues:
         sample = "\n".join(all_issues[:50])
