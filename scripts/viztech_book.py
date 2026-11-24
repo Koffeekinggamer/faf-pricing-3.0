@@ -15,9 +15,11 @@ from scripts.pdf_plain_text import clean_pdf_plain_text
 from scripts.retail_text import (
     excel_percent_to_display,
     forbidden_phrases,
+    is_call_for_pricing_cell,
     is_percent_token,
     retail_price_cell,
     sanitize_retail_text,
+    strip_call_for_contact_phrases,
 )
 
 try:
@@ -50,31 +52,9 @@ RETAIL_MARKUP_COL_RE = re.compile(
     re.I,
 )
 SEALED_PAINTED_RE = re.compile(r"sealed\s*/\s*painted|sealed\s+and\s+painted", re.I)
-# Option / note lines: drop contact-us / call-for-pricing clauses; keep the rest.
-CONTACT_PRICING_PHRASE_RE = re.compile(
-    r"(?:^|[;\s]+)"
-    r"(?:"
-    r"contact\s+us\s+for\s+pricing(?:\s+on\s+[^.;]*)?|"
-    r"call\s+(?:us\s+)?for\s+pricing(?:\s+on\s+[^.;]*)?"
-    r")"
-    r"\.?",
-    re.I,
-)
-
-
 def _strip_contact_pricing_phrases(text: str) -> str:
     """Remove 'contact us' / 'call for pricing' clauses from notes; keep other wording."""
-    if not text or not str(text).strip():
-        return ""
-    t = CONTACT_PRICING_PHRASE_RE.sub(" ", str(text))
-    t = re.sub(r"\s{2,}", " ", t).strip()
-    t = re.sub(r"^[;\s,.-]+|[;\s,.-]+$", "", t).strip()
-    # Restore a trailing period when the kept clause still looks like a sentence.
-    if t and not t.endswith((".", "!", "?", '"', "'")) and re.search(
-        r"\b(?:width|size|sizes|only|offered)\b", t, re.I
-    ):
-        t = t + "."
-    return t
+    return strip_call_for_contact_phrases(text)
 
 
 def normalize_builder_name(name: str) -> str:
@@ -896,6 +876,10 @@ def _transform_row_prices(
         if isinstance(v, str) and v.strip().lower() in {"n/a", "na", "-", "—", "–"}:
             cells.append("")
             continue
+        if is_call_for_pricing_cell(v):
+            # Leave blank — do not invent a retail number for call-for cells.
+            cells.append("")
+            continue
         if _is_wholesale_price(v):
             wholesale = float(v)
             retail = retail_price_cell(v, multiplier)
@@ -1213,9 +1197,12 @@ def _process_sheet(
                 prose_cells.append(t)
         joined_prose = " ".join(prose_cells)
         # Keep normal long prose, or short leftovers after contact-phrase strip
-        # (e.g. 'Only offered in 60" width.').
+        # (e.g. 'Only offered in 60" width.'), or section labels like
+        # 'Rectangle Glass Tops:' after a call-for parenthetical is removed.
         keep_prose = len(joined_prose) > 40 or (
             prose_before_len > len(joined_prose) and len(joined_prose) > 12
+        ) or any(
+            len(c) > 8 and c.rstrip().endswith(":") for c in prose_cells
         )
         if (
             prose_cells

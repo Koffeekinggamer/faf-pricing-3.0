@@ -5,6 +5,7 @@ import pytest
 from scripts.pdf_quality_check import (
     assert_pdfs_quality,
     find_add_upcharge_issues,
+    find_call_for_contact_wording,
     find_customer_contact_in_pdf,
     find_dealer_terms_in_pdf,
     find_pdf_markup_artifacts,
@@ -72,4 +73,14 @@ def test_no_bare_decimal_or_trailing_add_upcharges(pdf_paths: list[Path]) -> Non
         if p.name in QUALITY_EXEMPT_PDFS:
             continue
         bad.extend(find_add_upcharge_issues(p))
+    assert not bad, "\n".join(bad[:40])
+
+
+def test_no_call_for_contact_wholesale_dealer_wording(pdf_paths: list[Path]) -> None:
+    """Customer PDFs must not match /call for|contact|wholesale|dealer/i."""
+    bad: list[str] = []
+    for p in pdf_paths:
+        if p.name in QUALITY_EXEMPT_PDFS:
+            continue
+        bad.extend(find_call_for_contact_wording(p))
     assert not bad, "\n".join(bad[:40])
