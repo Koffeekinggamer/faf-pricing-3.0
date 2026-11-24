@@ -311,6 +311,30 @@
     "price_list_date": "2026-04-01"
   },
   {
+    "name": "Hoosier Home Furniture",
+    "pdf": "sheets/Hoosier_Home_Furniture.pdf",
+    "updated": "2026-11-24",
+    "price_list_date": "2026-03-16"
+  },
+  {
+    "name": "Hoosier Poly",
+    "pdf": "sheets/Hoosier_Poly.pdf",
+    "updated": "2026-11-24",
+    "price_list_date": "2026-03-01"
+  },
+  {
+    "name": "Hope Works Creations",
+    "pdf": "sheets/Hope_Works_Creations.pdf",
+    "updated": "2026-11-24",
+    "price_list_date": "2026-04-01"
+  },
+  {
+    "name": "HopeWood Inc",
+    "pdf": "sheets/HopeWood_Inc.pdf",
+    "updated": "2026-11-24",
+    "price_list_date": "2026-04-01"
+  },
+  {
     "name": "Indian Trail Furniture",
     "pdf": "sheets/Indian_Trail_Furniture.pdf",
     "updated": "2026-11-14",

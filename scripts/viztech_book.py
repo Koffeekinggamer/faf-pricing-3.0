@@ -1311,6 +1311,32 @@ def luxhome_has_finished_products(path: Path) -> bool:
     return False
 
 
+def _markup_calculator_without_finished(rows: list[list]) -> bool:
+    """True for HW Chair-style markup calculators that expose unfinished bases only."""
+    head = " ".join(
+        _cell_str(c) for row in rows[:6] for c in row if _cell_str(c)
+    ).lower()
+    if not re.search(r"markup\s*calculator", head):
+        return False
+    # Optional finishing adder ≠ finished price columns
+    has_finished_col = False
+    for row in rows[:8]:
+        for c in row:
+            if not isinstance(c, str):
+                continue
+            s = c.lower().strip()
+            if re.search(r"\bunfinished\b", s):
+                continue
+            if re.search(r"cost\s+of\s+finishing|nat\.?\s*finish", s):
+                continue
+            if re.search(r"\bfinished\b|\bfin\.?\b", s):
+                has_finished_col = True
+                break
+        if has_finished_col:
+            break
+    return not has_finished_col
+
+
 def _prefer_wholesale_sheet_names(
     sheets: dict[str, list[list]],
 ) -> set[str]:
@@ -1324,6 +1350,16 @@ def _prefer_wholesale_sheet_names(
             if re.search(r"\bwholesale\b", v):
                 continue
             if re.search(r"price\s*list", v) and not re.search(r"\bwholesale\b", v):
+                skip.add(n)
+    # Hoosier Poly: keep plain "2026 Prices", drop "2026 Prices with Markup"
+    plain_prices = [
+        n
+        for n, v in lower.items()
+        if re.search(r"\bprices?\b", v) and not re.search(r"markup", v)
+    ]
+    if plain_prices:
+        for n, v in lower.items():
+            if re.search(r"prices?\s+with\s+markup|\bwith\s+markup\b", v):
                 skip.add(n)
     # Slab workbooks: Prices is often formula-only (empty data_only); Master holds wholesale
     if any(v == "prices" for v in lower.values()) and any(v == "master" for v in lower.values()):
@@ -1398,6 +1434,7 @@ def process_viztech_workbook(
     skipped: list[str] = []
     out: list[ProcessedRow] = []
     has_grid = False
+    markup_calc_only = False
     prefer_skip = _prefer_wholesale_sheet_names(sheets)
 
     for name, rows in sheets.items():
@@ -1418,6 +1455,11 @@ def process_viztech_workbook(
             continue
         if _unfinished_only_sheet(rows):
             skipped.append(name)
+            continue
+        if _markup_calculator_without_finished(rows):
+            # HW Chair Catalog: unfinished bases + optional finish adder, no finished grid
+            skipped.append(name)
+            markup_calc_only = True
             continue
         # Hillside: skip INDEX / approximate finishing-cost sheets (page #s / add-ons)
         head = " ".join(
@@ -1441,7 +1483,13 @@ def process_viztech_workbook(
             has_grid = True
 
     if not has_grid:
-        return ViztechBuildResult([], spots, skipped, [f"No price grid in {path.name}"])
+        reason = f"No price grid in {path.name}"
+        if markup_calc_only:
+            reason = (
+                f"No finished prices (markup calculator / unfinished bases only) "
+                f"in {path.name}"
+            )
+        return ViztechBuildResult([], spots, skipped, [reason])
 
     return ViztechBuildResult(collapse_blank_rows(out), spots, skipped, [])
 
