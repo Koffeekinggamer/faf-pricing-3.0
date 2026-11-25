@@ -36,7 +36,9 @@ SKIP_SHEET_RE = re.compile(
     r"do\s*not\s*print|\(for\s*wholesale\)|internet\s*policy.*wholesale|^pricing$|"
     r"price_multiplier|_calc|(?:^|_)calc$|for\s*print|markup\s*page|contact\s*and\s*info|"
     r"^fabric\s*list$|back\s*cover|retail\s*cover|retail\s*options|retail\s*furniture|"
-    r"^2026\s*retail$|retail\s*price\s*list\s*markup|^increase\s*entry$)",
+    r"^2026\s*retail$|retail\s*price\s*list\s*markup|^increase\s*entry$|"
+    r"^personalization$|^contents$|^about\s*us$|^info$|dealer\s*notes|"
+    r"front\s*page)",
     re.I,
 )
 UNFINISHED_SHEET_RE = re.compile(r"unfinished|retail\s*unf", re.I)
@@ -45,7 +47,10 @@ ITEM_CODE_RE = re.compile(
     re.I,
 )
 MMYY_RE = re.compile(r"[_\s](\d{2})(\d{2})(?:-\d+)?\.(?:xlsx|xls)", re.I)
-FINISH_COST_RE = re.compile(r"cost\s+to\s+(?:stain|paint)\s+finish", re.I)
+FINISH_COST_RE = re.compile(
+    r"cost\s+to\s+(?:stain|paint)\s+finish|finishing\s+costs?",
+    re.I,
+)
 RETAIL_MARKUP_COL_RE = re.compile(
     r"sug\.?\s*retail|suggested\s*retail|\bmap\b|\bmsrp\b|"
     r"internet\s*prices?|pallet\s*qtys?|pallet\s*price",
@@ -191,6 +196,9 @@ def _is_wholesale_price(val: Any) -> bool:
     if not isinstance(val, (int, float)) or isinstance(val, bool):
         return False
     v = float(val)
+    # Calendar years in headers (e.g. INTEG "2026 Pricelist") are not prices.
+    if abs(v - round(v)) < 1e-9 and 2015 <= int(round(v)) <= 2035:
+        return False
     return 1 <= v <= 250_000
 
 
@@ -981,6 +989,18 @@ def _infer_price_cols(rows: list[list], start: int) -> set[int]:
         mirrored = _mirror_finished_cols(rows, start, header_block, width)
         if mirrored:
             return mirrored - item_cols - excluded
+        # J Miller: "Finished" header sits one column right of the value cells
+        left_of_finished = {
+            j - 1
+            for j in labeled
+            if j > 0
+            and any(
+                j - 1 < len(row) and _is_wholesale_price(row[j - 1])
+                for row in rows[start : start + 80]
+            )
+        }
+        if left_of_finished and _labeled_cols_have_prices(rows, start, left_of_finished):
+            return left_of_finished - item_cols - excluded
     # Hershy Aurora/Eclipse: prefer wholesale + woodgrain, drop suggested retail
     wholesale_hdr: set[int] = set()
     woodgrain_hdr: set[int] = set()
@@ -1032,6 +1052,19 @@ def _infer_price_cols(rows: list[list], start: int) -> set[int]:
                 bad.add(j)
     return {j for j in cols if j not in bad}
 
+def _row_unf_fin_kind(row: list) -> str | None:
+    """INTEG-style rows labeled 'unfinished' / 'finished' in a status column."""
+    for c in row:
+        if not isinstance(c, str):
+            continue
+        s = c.strip().lower()
+        if s == "unfinished":
+            return "unfinished"
+        if s == "finished":
+            return "finished"
+    return None
+
+
 def _process_sheet(
     name: str,
     rows: list[list],
@@ -1063,6 +1096,64 @@ def _process_sheet(
             i += 1
             continue
         if re.search(r"how\s+to\s+price\s+beverage|take\s+the\s+base\s+price\s+in\s+column", joined, re.I):
+            i += 1
+            continue
+        # INTEG: unfinished row + finished row pair → keep finished prices only
+        pair_kind = _row_unf_fin_kind(row)
+        if pair_kind == "unfinished":
+            label_u, _ = _row_item_label(row)
+            if not label_u:
+                # Size / opening text often sits beside the unfinished tag
+                for c in row:
+                    if isinstance(c, str) and c.strip().lower() not in {
+                        "unfinished",
+                        "finished",
+                    }:
+                        t = sanitize_retail_text(c, multiplier)
+                        if t and len(t) >= 3:
+                            label_u = t
+                            break
+            if label_u:
+                item_hint = label_u
+            nxt = rows[i + 1] if i + 1 < len(rows) else None
+            if nxt is not None and _row_unf_fin_kind(nxt) == "finished":
+                price_cols = [
+                    j for j, c in enumerate(nxt) if _is_wholesale_price(c)
+                ]
+                # Drop leading finishing-delta cells (col 0/1) when wood prices sit further right
+                if len(price_cols) >= 3:
+                    woods = [j for j in price_cols if j >= 4]
+                    if woods:
+                        price_cols = woods
+                if price_cols:
+                    cells = _transform_row_prices(
+                        nxt,
+                        multiplier,
+                        price_cols,
+                        spots=spots,
+                        item_hint=item_hint or label_u or "",
+                    )
+                    # Prefer unfinished-row label when finished row has none
+                    if cells and (item_hint or label_u):
+                        lab = sanitize_retail_text(item_hint or label_u, multiplier)
+                        if lab:
+                            cells[0] = lab
+                    if cells:
+                        out.append(ProcessedRow(RowKind.WIDE, cells))
+                i += 2
+                continue
+            # Unfinished without a finished twin — drop
+            i += 1
+            continue
+        if pair_kind == "finished":
+            # Orphan finished row (label on prior unfinished already consumed)
+            price_cols = [j for j, c in enumerate(row) if _is_wholesale_price(c)]
+            if price_cols:
+                cells = _transform_row_prices(
+                    row, multiplier, price_cols, spots=spots, item_hint=item_hint
+                )
+                if cells:
+                    out.append(ProcessedRow(RowKind.WIDE, cells))
             i += 1
             continue
         if _is_options_column_header_row(row):
@@ -1338,15 +1429,17 @@ def _prefer_wholesale_sheet_names(
                 continue
             if re.search(r"price\s*list", v) and not re.search(r"\bwholesale\b", v):
                 skip.add(n)
-    # Hoosier Poly: keep plain "2026 Prices", drop "2026 Prices with Markup"
+    # Hoosier Poly / Interior Hardwoods: keep plain price list, drop markup twin
     plain_prices = [
         n
         for n, v in lower.items()
-        if re.search(r"\bprices?\b", v) and not re.search(r"markup", v)
+        if re.search(r"\bprices?\b|\bprice\s*list\b", v) and not re.search(r"markup", v)
     ]
     if plain_prices:
         for n, v in lower.items():
-            if re.search(r"prices?\s+with\s+markup|\bwith\s+markup\b", v):
+            if re.search(r"prices?\s+with\s+markup|\bwith\s+markup\b|price\s*list\s*markup", v):
+                skip.add(n)
+            elif re.search(r"\bmarkup\b", v) and re.search(r"price\s*list", v):
                 skip.add(n)
     # Slab workbooks: Prices is often formula-only (empty data_only); Master holds wholesale
     if any(v == "prices" for v in lower.values()) and any(v == "master" for v in lower.values()):
@@ -1362,7 +1455,7 @@ def _prefer_wholesale_sheet_names(
             skip.add(prices_name)
         else:
             skip.add(master_name)
-    # When Master holds a real priced grid, skip duplicate Sheet*/Pricing/Title Page.
+    # When Master holds a real priced grid, skip duplicate Sheet*/Pricing/Products/Title.
     # Hillside-style books use Master as markup-only and keep Sheet3+ price grids.
     if any(v == "master" for v in lower.values()):
         master_name = next(n for n, v in lower.items() if v == "master")
@@ -1380,6 +1473,7 @@ def _prefer_wholesale_sheet_names(
                     v.startswith("sheet")
                     or v == "title page"
                     or "product size" in v
+                    or v == "products"
                     or re.search(r"^t\s*price|^cy\s*price", v)
                 ):
                     skip.add(n)

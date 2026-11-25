@@ -341,6 +341,34 @@
     "price_list_date": "2026-01-01"
   },
   {
+    "name": "INTEG Wood Products",
+    "pdf": "sheets/INTEG_Wood_Products.pdf",
+    "updated": "2026-11-25",
+    "price_list_date": "2026-03-01"
+  },
+  {
+    "name": "Interior Expressions",
+    "pdf": "sheets/Interior_Expressions.pdf",
+    "updated": "2026-11-25",
+    "price_list_date": "2026-12-01"
+  },
+  {
+    "name": "Interior Hardwoods",
+    "pdf": "sheets/Interior_Hardwoods.pdf",
+    "updated": "2026-11-25"
+  },
+  {
+    "name": "Ironwood Fire Tables",
+    "pdf": "sheets/Ironwood_Fire_Tables.pdf",
+    "updated": "2026-11-25",
+    "price_list_date": "2025-09-03"
+  },
+  {
+    "name": "J Miller Woodworking",
+    "pdf": "sheets/J_Miller_Woodworking.pdf",
+    "updated": "2026-11-25"
+  },
+  {
     "name": "J&R Woodworking",
     "pdf": "sheets/J_R_Woodworking.pdf",
     "updated": "2026-11-14"
