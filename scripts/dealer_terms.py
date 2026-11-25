@@ -41,7 +41,9 @@ BUILDER_CONTACT_RE = re.compile(
     r"\bhttps?://|"
     r"\bpo\s+box\b|"
     r"\btownship\s+road\b|"
-    r"\b\d+\s+cr\s+\d+\b"
+    r"\b\d+\s+cr\s+\d+\b|"
+    r"\b(?:mailing\s+)?address\s*:|"
+    r"\bshop\s+location\s*:"
     r")",
     re.I,
 )
@@ -56,7 +58,10 @@ STREET_LINE_RE = re.compile(
     re.I,
 )
 
-AMISH_COUNTY_ROAD_RE = re.compile(r"\b\d+\s+cr\s+\d+\b", re.I)
+AMISH_COUNTY_ROAD_RE = re.compile(
+    r"\b\d+\s+(?:cr|tr|pr|twp\.?\s*rd\.?|township\s+rd\.?)\s+\d+\b",
+    re.I,
+)
 
 # Require separators between groups so wholesale decimals like 673.1285313
 # are not mistaken for phone numbers.
