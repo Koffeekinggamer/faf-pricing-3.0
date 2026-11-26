@@ -446,6 +446,17 @@ def _join_prices_item_codes_onto_master(
                 )
             ):
                 mrow[1] = prices_desc
+        # Prefer Prices size when present (ECO-3…6: 13.5" on Prices vs 14" on Master).
+        prices_size = (
+            prow[2].strip() if len(prow) > 2 and isinstance(prow[2], str) else ""
+        )
+        if prices_size and re.search(
+            r"\d|\"|″|\'|′|[xX×]", prices_size
+        ):
+            while len(mrow) < 3:
+                mrow.append(None)
+            mrow[2] = prices_size
+
 
 def _load_xlsx_sheets(path: Path) -> dict[str, list[list]]:
     """Load values; convert percent-formatted numerics to 'N%' display tokens."""
@@ -1103,12 +1114,26 @@ def _row_item_label(row: list) -> tuple[str, int]:
     return "", -1
 
 
+# Hope Works mid-columns that are type tokens, not product descriptions.
+_MID_TEXT_DENY = frozenset({"chair", "upholstered", "upholstery"})
+_BED_SIZE_RE = re.compile(
+    r"^(twin|full|queen|king|cal(?:ifornia)?\s*king|"
+    r"full\s*/?\s*queen|king\s*/?\s*cal(?:ifornia)?\s*king)$",
+    re.I,
+)
+
+
 def _keep_item_mid_text(text: str) -> bool:
-    """True for real descriptions / sizes / Add-$ notes; false for short type tokens."""
+    """True for descriptions / bed sizes / Add-$ notes; false for type tokens."""
     t = text.strip()
     if not t:
         return False
+    if t.casefold() in _MID_TEXT_DENY:
+        return False
     if re.search(r"add\s+\$", t, re.I):
+        return True
+    # Bed / mattress size labels (Kid's Comfort, Kohler, …)
+    if _BED_SIZE_RE.match(t):
         return True
     # Size-like: 10" x 18" or 25" H
     if re.search(r"\d+\s*[\"″\'′]|(\d+\s*[xX×]\s*\d+)", t):
@@ -1117,6 +1142,9 @@ def _keep_item_mid_text(text: str) -> bool:
     if " " in t and len(t) >= 8:
         return True
     if len(t) >= 16:
+        return True
+    # Single-word furniture names (Dresser, Armoire, Nightstand, Chifferobe, …)
+    if len(t) >= 5 and re.fullmatch(r"[A-Za-z][A-Za-z'./-]*", t):
         return True
     return False
 
