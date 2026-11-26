@@ -286,12 +286,20 @@ def _col_row_from_a1(a1: str) -> tuple[int, int]:
     return col - 1, int(row_s) - 1
 
 
-def _excel_round_half_up(value: float, digits: int = 0) -> float:
+def _excel_round_half_up(value: Any, digits: int = 0) -> float:
     """Excel ROUND (half away from zero) — not Python banker's round()."""
     from decimal import Decimal, ROUND_HALF_UP
 
     quant = Decimal("1").scaleb(-digits) if digits else Decimal("1")
-    return float(Decimal(str(value)).quantize(quant, rounding=ROUND_HALF_UP))
+    dec = value if isinstance(value, Decimal) else Decimal(str(value))
+    return float(dec.quantize(quant, rounding=ROUND_HALF_UP))
+
+
+def _excel_round_product(a: float, b: float, digits: int = 0) -> float:
+    """ROUND(a*b, digits) with Decimal multiplication (350×1.15 → 403, not 402)."""
+    from decimal import Decimal
+
+    return _excel_round_half_up(Decimal(str(a)) * Decimal(str(b)), digits)
 
 
 def _numeric_cell_value(val: Any) -> float | None:
@@ -320,8 +328,8 @@ def _eval_round_product_formulas(
 ) -> None:
     """Fill data_only gaps for Jericho ROUND(base*factor[,]+k) wood columns.
 
-    Uses Excel half-up rounding so listed wholesale matches the workbook
-    (e.g. ROUND(154*1.25,0)=193, not Python banker's 192).
+    Uses Excel half-up rounding on Decimal products so listed wholesale matches
+    the workbook (e.g. ROUND(350*1.15,0)=403, ROUND(154*1.25,0)=193).
     """
     if not formulas:
         return
@@ -367,7 +375,7 @@ def _eval_round_product_formulas(
                 if a is None or b is None:
                     continue
                 digits = int(m.group("digits"))
-                product = _excel_round_half_up(a * b, digits)
+                product = _excel_round_product(a, b, digits)
                 if m.group("add") is not None:
                     addend = float(m.group("add"))
                     product = product + addend if m.group("op") == "+" else product - addend
@@ -381,10 +389,11 @@ def _join_prices_item_codes_onto_master(
     sheets: dict[str, list[list]],
     formula_map: dict[str, list[list]],
 ) -> None:
-    """Copy Prices-sheet item codes onto Master rows that only have a description.
+    """Copy Prices-sheet item codes (and descriptions) onto Master rows.
 
-    Town Hill / Modern Shadow Boxes store codes on Prices (TH36, MSB305, …) while
-    Master leaves column A blank; Prices formulas reference Master!D{row}.
+    Town Hill / Modern Shadow Boxes / Economy Bookcases store codes on Prices
+    (TH36, MSB305, ECO-3, …) while Master leaves column A blank or only puts the
+    code in the description column. Prices formulas reference Master!D{row}.
     """
     master = sheets.get("Master")
     prices = sheets.get("Prices")
@@ -410,14 +419,33 @@ def _join_prices_item_codes_onto_master(
         if master_row is None or master_row < 0 or master_row >= len(master):
             continue
         mrow = master[master_row]
-        while len(mrow) < 1:
+        while len(mrow) < 2:
             mrow.append(None)
         existing = mrow[0]
         if existing in (None, "") or (
             isinstance(existing, str) and not existing.strip()
         ):
             mrow[0] = code
-
+        prices_desc = prow[1].strip() if len(prow) > 1 and isinstance(prow[1], str) else ""
+        if prices_desc:
+            mdesc = mrow[1] if isinstance(mrow[1], str) else ""
+            mdesc_s = mdesc.strip()
+            # Replace blank / code-only Master descriptions with Prices text
+            # (ECO-3, Mission CD-Single Storage, …).
+            if (
+                not mdesc_s
+                or mdesc_s.casefold() == code.casefold()
+                or (
+                    mdesc_s.casefold().startswith(code.casefold())
+                    and len(mdesc_s) <= len(code) + 2
+                )
+                or (
+                    # Prefer the Prices wording when it is clearly the fuller label
+                    len(prices_desc) > len(mdesc_s)
+                    or re.search(r"\bsingle\b", prices_desc, re.I)
+                )
+            ):
+                mrow[1] = prices_desc
 
 def _load_xlsx_sheets(path: Path) -> dict[str, list[list]]:
     """Load values; convert percent-formatted numerics to 'N%' display tokens."""
@@ -1075,6 +1103,24 @@ def _row_item_label(row: list) -> tuple[str, int]:
     return "", -1
 
 
+def _keep_item_mid_text(text: str) -> bool:
+    """True for real descriptions / sizes / Add-$ notes; false for short type tokens."""
+    t = text.strip()
+    if not t:
+        return False
+    if re.search(r"add\s+\$", t, re.I):
+        return True
+    # Size-like: 10" x 18" or 25" H
+    if re.search(r"\d+\s*[\"″\'′]|(\d+\s*[xX×]\s*\d+)", t):
+        return True
+    # Multi-word or long descriptions (J&M "QUICK SHIP Storage Rails…")
+    if " " in t and len(t) >= 8:
+        return True
+    if len(t) >= 16:
+        return True
+    return False
+
+
 def _transform_row_prices(
     row: list,
     multiplier: float,
@@ -1096,25 +1142,27 @@ def _transform_row_prices(
     cells.append(lab)
     price_set = set(price_cols)
     first_price = min(price_set) if price_set else len(row)
-    # Jericho-style multi-wood grids: keep Description / Size after the item code.
-    # Skip for single/dual price rows (Hope Works etc.) so prose mid-columns stay out.
-    if len(price_set) >= 4:
-        for j in range(max(label_j + 1, 0), min(label_j + 3, first_price)):
-            if j in price_set or j >= len(row):
-                continue
-            v = row[j]
-            if _is_wholesale_price(v) or _is_na_cell(v):
-                continue
-            if not isinstance(v, str):
-                continue
-            # Stop if this looks like another item code (start of a mirrored panel).
-            if j > label_j + 1 and ITEM_CODE_RE.match(v.strip()):
-                break
-            if j > label_j + 1 and v.strip().casefold() == lab.casefold():
-                break
-            t = sanitize_retail_text(v, multiplier)
-            if t and len(t) >= 2 and not is_dealer_terms_text(t):
-                cells.append(t)
+    # Keep Description / Size / "Add $… for Toe Kick" notes after the item code.
+    # Skip short single-token mid-labels (Hope Works "Chair" / "Upholstered").
+    for j in range(max(label_j + 1, 0), min(label_j + 3, first_price)):
+        if j in price_set or j >= len(row):
+            continue
+        v = row[j]
+        if _is_wholesale_price(v) or _is_na_cell(v):
+            continue
+        if not isinstance(v, str):
+            continue
+        # Stop if this looks like another item code (start of a mirrored panel).
+        if j > label_j + 1 and ITEM_CODE_RE.match(v.strip()):
+            break
+        if v.strip().casefold() == lab.casefold():
+            continue
+        t = sanitize_retail_text(v, multiplier)
+        if not t or is_dealer_terms_text(t):
+            continue
+        if not _keep_item_mid_text(t):
+            continue
+        cells.append(t)
     got_price = False
     for j in sorted(price_set):
         if j >= len(row):

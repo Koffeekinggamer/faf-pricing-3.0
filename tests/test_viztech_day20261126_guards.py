@@ -11,10 +11,12 @@ from scripts.viztech_book import (
     _addon_cols_above,
     _eval_round_product_formulas,
     _excel_round_half_up,
+    _excel_round_product,
     _excluded_price_header_cols,
     _finished_price_cols,
     _infer_price_cols,
     _join_prices_item_codes_onto_master,
+    _keep_item_mid_text,
     _process_sheet,
     _wood_cols_before_finished_add,
     section_title_from_path,
@@ -209,6 +211,17 @@ def test_excel_round_half_up_not_bankers():
     assert round(192.5) == 192
     assert _excel_round_half_up(154 * 1.25, 0) == 193.0
     assert _excel_round_half_up(192.5, 0) == 193.0
+    # Float 350*1.15 is 402.4999… — Decimal product must yield Excel's 403
+    assert _excel_round_half_up(350 * 1.15, 0) == 402.0
+    assert _excel_round_product(350, 1.15, 0) == 403.0
+
+
+def test_keep_item_mid_text_for_jm_notes_not_hope_works_tokens():
+    assert _keep_item_mid_text("QUICK SHIP Storage Rails 6 Dr.")
+    assert _keep_item_mid_text("Add $257. for Toe Kick")
+    assert _keep_item_mid_text('10" front x 18" back')
+    assert not _keep_item_mid_text("Chair")
+    assert not _keep_item_mid_text("Upholstered")
 
 
 def test_jericho_rb31_six_woods_and_plus_ten_formulas():
@@ -286,13 +299,47 @@ def test_jericho_m82_413_ns_fourth_wood_is_522():
     assert dollar[3] == "$522"
 
 
-def test_jericho_priced_cells_equal_ceil_source_times_2_7():
-    woods = [257.17, 296.0, 319.0, 331.0, 357.0, 383.0, 154.0, 193.0]
-    for w in woods:
-        assert retail_price_cell(w, 2.7) == f"${retail_whole_dollar(w, 2.7):,}"
-        import math
+def test_jericho_priced_cells_equal_ceil_listed_wholesale_times_2_7():
+    """Guard must use listed cell values (403), not a float-derived 402."""
+    import math
 
+    listed = [257.17, 296.0, 319.0, 331.0, 357.0, 383.0, 154.0, 193.0, 403.0]
+    for w in listed:
+        assert retail_price_cell(w, 2.7) == f"${retail_whole_dollar(w, 2.7):,}"
         assert retail_whole_dollar(w, 2.7) == math.ceil(w * 2.7 - 1e-12)
+    # TH36 2nd wood listed wholesale is 403 → $1,089
+    assert _excel_round_product(350, 1.15, 0) == 403.0
+    assert retail_price_cell(403.0, 2.7) == "$1,089"
+
+
+def test_jericho_th36_second_wood_from_listed_403():
+    headers = [
+        [None, None, "Size", "Oak", "Br. Maple", "RQSWO", "Ash", "Alder", "QSWO", "Finished\nPrices\nAdd"],
+        ["Item No.", "Description"],
+        [None, None, None, None, 1.15, 1.2, 1.25, 1.35, 1.45],
+    ]
+    rows = headers + [
+        ["TH36", "Round Coffee Table Bev Top", '36" Round & 18" High', 350, None, None, None, None, None, 45],
+    ]
+    formulas = [[None] * 10 for _ in headers] + [
+        [
+            None,
+            None,
+            None,
+            None,
+            "=ROUND(D4*$E$3,0)",
+            "=ROUND(D4*$F$3,0)",
+            "=ROUND(D4*$G$3,0)",
+            "=ROUND(D4*$H$3,0)",
+            "=ROUND(D4*$I$3,0)",
+            None,
+        ],
+    ]
+    _eval_round_product_formulas(rows, formulas, sheet_name="Master", cross={"Master": rows})
+    assert rows[3][4] == 403.0  # listed wholesale cell after Excel ROUND
+    out = _process_sheet("Master", rows, multiplier=2.7, spots=[])
+    prices = [c for c in [r for r in out if r.kind == RowKind.WIDE][0].cells if c.startswith("$")]
+    assert prices[1] == "$1,089"
 
 
 def test_jericho_prices_sheet_codes_join_onto_master():
@@ -300,18 +347,46 @@ def test_jericho_prices_sheet_codes_join_onto_master():
         "Master": [
             ["Item No.", "Description", "Size", "Oak"],
             [None, "Round Coffee Table Bev Top ", '36" Round & 18" High', 350],
+            [None, "ECO-3  ", '14" x 24" x 36"', 195],
+            ["MCD333", "Mission CD Storage", '9" x 15" x 49"', 145],
         ],
         "Prices": [
             ["Item No.", "Description"],
             ["TH36", "Round Coffee Table Bev Top "],
+            ["ECO-3", "Economy Bookcase"],
+            ["MCD333", "Mission CD-Single Storage"],
         ],
     }
     formula_map = {
         "Prices": [
             [None, None],
             ["=ROUND(Master!D2*Markup!$B$6,2)", None],
+            ["=ROUND(Master!D3*Markup!$B$6,2)", None],
+            ["=ROUND(Master!D4*Markup!$B$6,2)", None],
         ],
-        "Master": [[None] * 4, [None] * 4],
+        "Master": [[None] * 4 for _ in range(4)],
     }
     _join_prices_item_codes_onto_master(sheets, formula_map)
     assert sheets["Master"][1][0] == "TH36"
+    assert sheets["Master"][2][0] == "ECO-3"
+    assert sheets["Master"][2][1] == "Economy Bookcase"
+    assert sheets["Master"][3][1] == "Mission CD-Single Storage"
+
+
+def test_jm_toe_kick_mid_text_kept():
+    rows = [
+        ["Item #", "Description", "Note", "Br. Maple"],
+        [2013, " QUICK SHIP Storage Rails 6 Dr.", "Add $95. for Toe Kick", 865],
+        ["2013A", "Storage Rails 6 Dr.", "Add $75. for Toe Kick", 865],
+    ]
+    out = _process_sheet("Classic Shaker Sets", rows, multiplier=2.7, spots=[])
+    wide = [r.cells for r in out if r.kind == RowKind.WIDE]
+    assert any(
+        c[0] in ("2013", "2013") and any("Toe Kick" in x for x in c) and "$2,336" in c
+        for c in wide
+    )
+    line2013 = next(c for c in wide if str(c[0]) == "2013")
+    line2013a = next(c for c in wide if c[0] == "2013A")
+    assert any("Toe Kick" in x for x in line2013)
+    assert any("Toe Kick" in x for x in line2013a)
+    assert "$2,336" in line2013 and "$2,336" in line2013a
