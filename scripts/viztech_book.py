@@ -38,7 +38,15 @@ SKIP_SHEET_RE = re.compile(
     r"^fabric\s*list$|back\s*cover|retail\s*cover|retail\s*options|retail\s*furniture|"
     r"^2026\s*retail$|retail\s*price\s*list\s*markup|^increase\s*entry$|"
     r"^personalization$|^contents$|^about\s*us$|^info$|dealer\s*notes|"
-    r"front\s*page)",
+    r"front\s*page|^\s*percentage\s*$)",
+    re.I,
+)
+# Finish upcharge columns (Jericho "Finished Prices Add", Kohler "Add for 2-Tone").
+ADD_ON_PRICE_COL_RE = re.compile(
+    r"finished\s*prices?\s*add|"
+    r"^\s*adds?\s*$|"
+    r"add\s+for\b|"
+    r"\badds?\s+for\b",
     re.I,
 )
 UNFINISHED_SHEET_RE = re.compile(r"unfinished|retail\s*unf", re.I)
@@ -91,11 +99,39 @@ def _section_label_from_upload_name(path: Path) -> str | None:
     return " ".join(words).strip() or None
 
 
+def _section_label_from_slug_suffix(path: Path) -> str | None:
+    """builder-slug__Collection_Name.xlsx → 'Collection Name' (Kidron-style)."""
+    m = re.match(r"^[^_]+(?:-[^_]+)*__(.+)\.(?:xlsx|xls)$", path.name, re.I)
+    if not m:
+        return None
+    raw = m.group(1).strip()
+    # Drop leading catalog codes like CODE_2026_ when present; keep plain collection names.
+    coded = re.match(r"^[A-Z]{1,6}_\d{4}_(.+)$", raw, re.I)
+    if coded:
+        return None  # handled by _section_label_from_upload_name
+    if re.search(r"_Pricelist|_Price_List|_Price-List", raw, re.I):
+        return None
+    label = raw.replace("_", " ").replace("-", " ")
+    label = re.sub(r"\s+", " ", label).strip()
+    if not label or label.casefold() in {"pricelist", "price list", "master"}:
+        return None
+    words: list[str] = []
+    for w in label.split():
+        if w.lower() in {"for", "and", "of", "the"}:
+            words.append(w.lower())
+        else:
+            words.append(w[:1].upper() + w[1:] if w else w)
+    return " ".join(words).strip() or None
+
+
 def section_title_from_path(path: Path) -> str:
     fname = path.name
     from_upload = _section_label_from_upload_name(path)
     if from_upload:
         return from_upload
+    from_suffix = _section_label_from_slug_suffix(path)
+    if from_suffix:
+        return from_suffix
     if re.search(r"buckeye-rockers__AL_", fname, re.I):
         return "Authentex"
     if re.search(r"buckeye-rockers__BR_", fname, re.I):
@@ -339,14 +375,16 @@ def _finished_price_cols(header_rows: list[list], width: int) -> set[int]:
             s = c.lower().strip()
             if RETAIL_MARKUP_COL_RE.search(s):
                 continue
-            if FINISH_COST_RE.search(s):
-                # Heritage-style finish add-on, not a finished product price
+            if FINISH_COST_RE.search(s) or ADD_ON_PRICE_COL_RE.search(s):
+                # Heritage finish cost / Jericho-Kohler finish Add — not wood prices
                 continue
-            if re.fullmatch(r"unf\.?", s) or (
+            if re.fullmatch(r"unf(?:in)?\.?", s) or (
                 re.search(r"\bunfinished\d*\b", s) and not re.search(r"\bfinished\b", s)
             ):
                 unfinished.add(j)
-            elif re.fullmatch(r"fin\.?", s) or re.search(r"\bfinished\b", s):
+            elif re.fullmatch(r"fin\.?", s) or (
+                re.search(r"\bfinished\b", s) and not ADD_ON_PRICE_COL_RE.search(s)
+            ):
                 finished.add(j)
             elif SEALED_PAINTED_RE.search(s):
                 finished.add(j)
@@ -354,11 +392,14 @@ def _finished_price_cols(header_rows: list[list], width: int) -> set[int]:
                 # Fishers / Hilltop: Stain / Stained / 2-Tone & Glazing are finished
                 finished.add(j)
     # Hoosier-style "FINISHED PRICES" band: expand through following wood headers
+    # (exclude "Finished Prices Add" upcharge columns).
     band_starts = [
         j
         for h in header_rows
         for j, c in enumerate(h)
-        if isinstance(c, str) and re.search(r"(?<!un)finished\s*prices?", c, re.I)
+        if isinstance(c, str)
+        and re.search(r"(?<!un)finished\s*prices?", c, re.I)
+        and not ADD_ON_PRICE_COL_RE.search(c)
     ]
     if band_starts:
         start = min(band_starts)
@@ -398,7 +439,7 @@ def _excluded_price_header_cols(header_rows: list[list], width: int) -> set[int]
                 sealed.add(j)
             if re.fullmatch(r"price\s*ea\.?", s) or s in {"price ea", "price ea."}:
                 bad.add(j)
-            if FINISH_COST_RE.search(s):
+            if FINISH_COST_RE.search(s) or ADD_ON_PRICE_COL_RE.search(s):
                 bad.add(j)
     # When Sealed/Painted exists, drop other Hershy wholesale tiers (Price Ea already bad)
     if sealed:
@@ -932,12 +973,14 @@ def _mirror_finished_cols(
             c = h[j]
             if not isinstance(c, str):
                 continue
-            s = c.lower()
-            if re.search(r"\bunfinished\d*\b", s) and not re.search(r"\bfinished\b", s):
-                unfinished.add(j)
-            elif re.search(r"\bfinished\b", s) or re.search(
-                r"\b(?:stain|glaz(?:e|ing)|2[\s-]?tone|paint)\b", s
+            s = c.lower().strip()
+            if re.fullmatch(r"unf(?:in)?\.?", s) or (
+                re.search(r"\bunfinished\d*\b", s) and not re.search(r"\bfinished\b", s)
             ):
+                unfinished.add(j)
+            elif (
+                re.search(r"\bfinished\b", s) and not ADD_ON_PRICE_COL_RE.search(s)
+            ) or re.search(r"\b(?:stain|glaz(?:e|ing)|2[\s-]?tone|paint)\b", s):
                 finished.add(j)
     labeled = finished | unfinished
     if not labeled:
@@ -964,12 +1007,41 @@ def _mirror_finished_cols(
     return set()
 
 
+def _addon_cols_above(rows: list[list], start: int, width: int) -> set[int]:
+    """Find finish-Add / Add-for columns from any header row above the data line.
+
+    Jericho puts 'Finished Prices Add' as the last headed price column; anything
+    to its right is noise/flags. Kohler mirrors 'Add for 2-Tone' on each panel.
+    """
+    bad: set[int] = set()
+    # Scan from the top — Kohler collection sheets put wood/Add headers on row 1
+    # while priced SKUs can sit well past a short lookback window.
+    finished_add_sentinels: list[int] = []
+    for row in rows[:start]:
+        for j in range(min(width + 1, len(row))):
+            c = row[j]
+            if not isinstance(c, str):
+                continue
+            if ADD_ON_PRICE_COL_RE.search(c):
+                bad.add(j)
+                if re.search(r"finished\s*prices?\s*add", c, re.I):
+                    finished_add_sentinels.append(j)
+    if finished_add_sentinels:
+        edge = min(finished_add_sentinels)
+        for j in range(edge, width + 1):
+            bad.add(j)
+    return bad
+
+
 def _infer_price_cols(rows: list[list], start: int) -> set[int]:
     cols: set[int] = set()
     # Prefer a nearby header row above the current line when present
     header_block, width = _header_block_near(rows, start)
+    width = max(width, max((len(r) for r in rows[max(0, start - 60) : start + 1]), default=0))
     item_cols = _item_code_cols(header_block, width)
-    excluded = _excluded_price_header_cols(header_block, width)
+    excluded = _excluded_price_header_cols(header_block, width) | _addon_cols_above(
+        rows, start, width
+    )
     labeled = _finished_price_cols(header_block, width) - excluded
     # Prefer finished/stained columns that actually hold values (Hilltop mirror left empty)
     if labeled:
@@ -1046,8 +1118,13 @@ def _infer_price_cols(rows: list[list], start: int) -> set[int]:
             if not isinstance(c, str):
                 continue
             s = c.strip().lower()
-            if s == "unfinished" or (
-                re.search(r"\bunfinished\b", s) and not re.search(r"\bfinished\b", s)
+            if (
+                s in {"unfinished", "unfin", "unf", "unf."}
+                or re.fullmatch(r"unf(?:in)?\.?", s)
+                or (
+                    re.search(r"\bunfinished\b", s)
+                    and not re.search(r"\bfinished\b", s)
+                )
             ):
                 bad.add(j)
     return {j for j in cols if j not in bad}
@@ -1236,14 +1313,24 @@ def _process_sheet(
                 i += 1
                 continue
         price_cols = _infer_price_cols(rows, i)
+        row_width = max(len(row), max((len(r) for r in rows[max(0, i - 60) : i + 1]), default=0))
+        addon_skip = _addon_cols_above(rows, i, row_width)
+        if price_cols:
+            use_cols = [j for j in sorted(price_cols) if j not in addon_skip]
+        else:
+            use_cols = [j for j in range(len(row)) if j not in addon_skip]
         cells = _transform_row_prices(
-            row, multiplier, price_cols or range(len(row)), spots=spots, item_hint=item_hint
+            row, multiplier, use_cols, spots=spots, item_hint=item_hint
         )
         if not cells and any(_is_wholesale_price(c) for c in row):
             # Inferred wood cols can miss Add-upcharge rows (Hillside Hardwood XX
             # mirrored panels). Fall back to actual wholesale positions; prefer the
             # left panel when the same Add label is duplicated.
-            nums = [j for j, c in enumerate(row) if _is_wholesale_price(c)]
+            nums = [
+                j
+                for j, c in enumerate(row)
+                if _is_wholesale_price(c) and j not in addon_skip
+            ]
             add_idxs = [
                 j
                 for j, c in enumerate(row)
@@ -1263,7 +1350,11 @@ def _process_sheet(
             continue
         label, _ = _row_item_label(row)
         if label and not price_cols:
-            nums = [j for j, c in enumerate(row) if _is_wholesale_price(c)]
+            nums = [
+                j
+                for j, c in enumerate(row)
+                if _is_wholesale_price(c) and j not in addon_skip
+            ]
             if nums:
                 cells = _transform_row_prices(row, multiplier, nums, spots=spots, item_hint=label)
                 if cells:
