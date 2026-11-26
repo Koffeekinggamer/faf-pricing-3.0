@@ -258,12 +258,19 @@ def _excel_format_is_percent(number_format: str | None) -> bool:
     return "%" in fmt.replace("%%", "")
 
 
+# Jericho Master: =ROUND(D6*$E$3,0) and = (ROUND(D111*$F$3,0))+10
 _ROUND_PRODUCT_RE = re.compile(
-    r"^=\s*ROUND\s*\(\s*"
+    r"^=\s*\(?\s*ROUND\s*\(\s*"
     r"(?:(?P<s1>(?:'[^']+'|[^'!]+)!)?(?P<c1>\$?[A-Z]+\$?\d+))"
     r"\s*\*\s*"
     r"(?:(?P<s2>(?:'[^']+'|[^'!]+)!)?(?P<c2>\$?[A-Z]+\$?\d+))"
-    r"\s*,\s*(?P<digits>\d+)\s*\)\s*$",
+    r"\s*,\s*(?P<digits>\d+)\s*\)\s*\)?\s*"
+    r"(?:(?P<op>[+-])\s*(?P<add>\d+(?:\.\d+)?))?\s*$",
+    re.I,
+)
+# Prices sheet: =ROUND(Master!D111*Markup!$B$6,2)
+_MASTER_REF_RE = re.compile(
+    r"Master!\$?[A-Z]+\$?(\d+)",
     re.I,
 )
 
@@ -279,6 +286,31 @@ def _col_row_from_a1(a1: str) -> tuple[int, int]:
     return col - 1, int(row_s) - 1
 
 
+def _excel_round_half_up(value: float, digits: int = 0) -> float:
+    """Excel ROUND (half away from zero) — not Python banker's round()."""
+    from decimal import Decimal, ROUND_HALF_UP
+
+    quant = Decimal("1").scaleb(-digits) if digits else Decimal("1")
+    return float(Decimal(str(value)).quantize(quant, rounding=ROUND_HALF_UP))
+
+
+def _numeric_cell_value(val: Any) -> float | None:
+    if isinstance(val, (int, float)) and not isinstance(val, bool):
+        return float(val)
+    if isinstance(val, str):
+        s = val.strip()
+        if s.endswith("%"):
+            try:
+                return float(s[:-1].strip()) / 100.0
+            except ValueError:
+                return None
+        try:
+            return float(s.replace(",", ""))
+        except ValueError:
+            return None
+    return None
+
+
 def _eval_round_product_formulas(
     rows: list[list],
     formulas: list[list],
@@ -286,13 +318,36 @@ def _eval_round_product_formulas(
     sheet_name: str,
     cross: dict[str, list[list]] | None = None,
 ) -> None:
-    """Fill data_only gaps for Jericho-style =ROUND(base*factor, n) wood columns."""
+    """Fill data_only gaps for Jericho ROUND(base*factor[,]+k) wood columns.
+
+    Uses Excel half-up rounding so listed wholesale matches the workbook
+    (e.g. ROUND(154*1.25,0)=193, not Python banker's 192).
+    """
     if not formulas:
         return
     cross = cross or {}
+
+    def _lookup(sheet_pref: str | None, a1: str, local_rows: list[list]) -> float | None:
+        sn = (sheet_pref or "").strip().strip("'") or sheet_name
+        grid = local_rows if sn.casefold() == sheet_name.casefold() else None
+        if grid is None:
+            for k, g in cross.items():
+                if k.casefold() == sn.casefold():
+                    grid = g
+                    break
+        if grid is None:
+            return None
+        try:
+            cc, rr = _col_row_from_a1(a1)
+        except ValueError:
+            return None
+        if rr < 0 or rr >= len(grid) or cc < 0 or cc >= len(grid[rr]):
+            return None
+        return _numeric_cell_value(grid[rr][cc])
+
     changed = True
     passes = 0
-    while changed and passes < 8:
+    while changed and passes < 12:
         changed = False
         passes += 1
         for r, frow in enumerate(formulas):
@@ -307,39 +362,61 @@ def _eval_round_product_formulas(
                 m = _ROUND_PRODUCT_RE.match(formula.strip())
                 if not m:
                     continue
-
-                def _lookup(sheet_pref: str | None, a1: str) -> float | None:
-                    sn = (sheet_pref or "").strip().strip("'") or sheet_name
-                    grid = rows if sn.casefold() == sheet_name.casefold() else cross.get(sn)
-                    if grid is None:
-                        # Markup!$B$6 etc. — try case-insensitive key
-                        for k, g in cross.items():
-                            if k.casefold() == sn.casefold():
-                                grid = g
-                                break
-                    if grid is None:
-                        return None
-                    try:
-                        cc, rr = _col_row_from_a1(a1)
-                    except ValueError:
-                        return None
-                    if rr < 0 or rr >= len(grid) or cc < 0 or cc >= len(grid[rr]):
-                        return None
-                    val = grid[rr][cc]
-                    if isinstance(val, (int, float)) and not isinstance(val, bool):
-                        return float(val)
-                    return None
-
-                a = _lookup(m.group("s1"), m.group("c1"))
-                b = _lookup(m.group("s2"), m.group("c2"))
+                a = _lookup(m.group("s1"), m.group("c1"), rows)
+                b = _lookup(m.group("s2"), m.group("c2"), rows)
                 if a is None or b is None:
                     continue
                 digits = int(m.group("digits"))
-                product = round(a * b, digits) if digits else float(round(a * b))
+                product = _excel_round_half_up(a * b, digits)
+                if m.group("add") is not None:
+                    addend = float(m.group("add"))
+                    product = product + addend if m.group("op") == "+" else product - addend
                 while len(row) <= c:
                     row.append(None)
                 row[c] = product
                 changed = True
+
+
+def _join_prices_item_codes_onto_master(
+    sheets: dict[str, list[list]],
+    formula_map: dict[str, list[list]],
+) -> None:
+    """Copy Prices-sheet item codes onto Master rows that only have a description.
+
+    Town Hill / Modern Shadow Boxes store codes on Prices (TH36, MSB305, …) while
+    Master leaves column A blank; Prices formulas reference Master!D{row}.
+    """
+    master = sheets.get("Master")
+    prices = sheets.get("Prices")
+    prices_forms = formula_map.get("Prices")
+    if not master or not prices or not prices_forms:
+        return
+    for r, prow in enumerate(prices):
+        if not prow:
+            continue
+        code = prow[0] if isinstance(prow[0], str) else ""
+        code = code.strip()
+        if not code or not ITEM_CODE_RE.match(code):
+            continue
+        frow = prices_forms[r] if r < len(prices_forms) else []
+        master_row: int | None = None
+        for f in frow:
+            if not isinstance(f, str):
+                continue
+            m = _MASTER_REF_RE.search(f)
+            if m:
+                master_row = int(m.group(1)) - 1
+                break
+        if master_row is None or master_row < 0 or master_row >= len(master):
+            continue
+        mrow = master[master_row]
+        while len(mrow) < 1:
+            mrow.append(None)
+        existing = mrow[0]
+        if existing in (None, "") or (
+            isinstance(existing, str) and not existing.strip()
+        ):
+            mrow[0] = code
 
 
 def _load_xlsx_sheets(path: Path) -> dict[str, list[list]]:
@@ -383,11 +460,12 @@ def _load_xlsx_sheets(path: Path) -> dict[str, list[list]]:
         formula_map[name] = formulas
     wb_val.close()
     wb_fmt.close()
-    # Second pass: evaluate simple ROUND(a*b,n) woods when Excel left no cached value.
+    # Evaluate ROUND(base*factor) woods (Excel half-up) when Excel left no cache.
     for name, rows in out.items():
         _eval_round_product_formulas(
             rows, formula_map.get(name, []), sheet_name=name, cross=out
         )
+    _join_prices_item_codes_onto_master(out, formula_map)
     return out
 
 
