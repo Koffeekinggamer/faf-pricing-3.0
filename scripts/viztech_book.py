@@ -42,9 +42,10 @@ SKIP_SHEET_RE = re.compile(
     re.I,
 )
 # Finish upcharge columns (Jericho "Finished Prices Add", Kohler "Add for 2-Tone").
+# Do NOT match a bare "Add" label — Hillside Options rows use that and sit inside
+# the header look-ahead window, which would drop the first wood/Add price column.
 ADD_ON_PRICE_COL_RE = re.compile(
     r"finished\s*prices?\s*add|"
-    r"^\s*adds?\s*$|"
     r"add\s+for\b|"
     r"\badds?\s+for\b",
     re.I,
@@ -129,9 +130,6 @@ def section_title_from_path(path: Path) -> str:
     from_upload = _section_label_from_upload_name(path)
     if from_upload:
         return from_upload
-    from_suffix = _section_label_from_slug_suffix(path)
-    if from_suffix:
-        return from_suffix
     if re.search(r"buckeye-rockers__AL_", fname, re.I):
         return "Authentex"
     if re.search(r"buckeye-rockers__BR_", fname, re.I):
@@ -182,6 +180,10 @@ def section_title_from_path(path: Path) -> str:
     ):
         if re.search(pat, n, re.I):
             return label
+    # Kidron-style slug__Collection_Name.xlsx — after known catalog patterns only.
+    from_suffix = _section_label_from_slug_suffix(path)
+    if from_suffix:
+        return from_suffix
     return "Price list"
 
 
@@ -256,36 +258,136 @@ def _excel_format_is_percent(number_format: str | None) -> bool:
     return "%" in fmt.replace("%%", "")
 
 
+_ROUND_PRODUCT_RE = re.compile(
+    r"^=\s*ROUND\s*\(\s*"
+    r"(?:(?P<s1>(?:'[^']+'|[^'!]+)!)?(?P<c1>\$?[A-Z]+\$?\d+))"
+    r"\s*\*\s*"
+    r"(?:(?P<s2>(?:'[^']+'|[^'!]+)!)?(?P<c2>\$?[A-Z]+\$?\d+))"
+    r"\s*,\s*(?P<digits>\d+)\s*\)\s*$",
+    re.I,
+)
+
+
+def _col_row_from_a1(a1: str) -> tuple[int, int]:
+    m = re.match(r"\$?([A-Z]+)\$?(\d+)$", a1.strip(), re.I)
+    if not m:
+        raise ValueError(a1)
+    letters, row_s = m.group(1).upper(), m.group(2)
+    col = 0
+    for ch in letters:
+        col = col * 26 + (ord(ch) - 64)
+    return col - 1, int(row_s) - 1
+
+
+def _eval_round_product_formulas(
+    rows: list[list],
+    formulas: list[list],
+    *,
+    sheet_name: str,
+    cross: dict[str, list[list]] | None = None,
+) -> None:
+    """Fill data_only gaps for Jericho-style =ROUND(base*factor, n) wood columns."""
+    if not formulas:
+        return
+    cross = cross or {}
+    changed = True
+    passes = 0
+    while changed and passes < 8:
+        changed = False
+        passes += 1
+        for r, frow in enumerate(formulas):
+            while len(rows) <= r:
+                rows.append([])
+            row = rows[r]
+            for c, formula in enumerate(frow):
+                if not isinstance(formula, str) or not formula.startswith("="):
+                    continue
+                if c < len(row) and row[c] not in (None, ""):
+                    continue
+                m = _ROUND_PRODUCT_RE.match(formula.strip())
+                if not m:
+                    continue
+
+                def _lookup(sheet_pref: str | None, a1: str) -> float | None:
+                    sn = (sheet_pref or "").strip().strip("'") or sheet_name
+                    grid = rows if sn.casefold() == sheet_name.casefold() else cross.get(sn)
+                    if grid is None:
+                        # Markup!$B$6 etc. — try case-insensitive key
+                        for k, g in cross.items():
+                            if k.casefold() == sn.casefold():
+                                grid = g
+                                break
+                    if grid is None:
+                        return None
+                    try:
+                        cc, rr = _col_row_from_a1(a1)
+                    except ValueError:
+                        return None
+                    if rr < 0 or rr >= len(grid) or cc < 0 or cc >= len(grid[rr]):
+                        return None
+                    val = grid[rr][cc]
+                    if isinstance(val, (int, float)) and not isinstance(val, bool):
+                        return float(val)
+                    return None
+
+                a = _lookup(m.group("s1"), m.group("c1"))
+                b = _lookup(m.group("s2"), m.group("c2"))
+                if a is None or b is None:
+                    continue
+                digits = int(m.group("digits"))
+                product = round(a * b, digits) if digits else float(round(a * b))
+                while len(row) <= c:
+                    row.append(None)
+                row[c] = product
+                changed = True
+
+
 def _load_xlsx_sheets(path: Path) -> dict[str, list[list]]:
     """Load values; convert percent-formatted numerics to 'N%' display tokens."""
     wb_val = openpyxl.load_workbook(path, data_only=True, read_only=True)
     wb_fmt = openpyxl.load_workbook(path, data_only=False, read_only=True)
     out: dict[str, list[list]] = {}
+    formula_map: dict[str, list[list]] = {}
     for name in wb_val.sheetnames:
         ws_v = wb_val[name]
         ws_f = wb_fmt[name] if name in wb_fmt.sheetnames else None
         rows: list[list] = []
+        formulas: list[list] = []
         fmt_rows = ws_f.iter_rows() if ws_f is not None else None
         for r_v in ws_v.iter_rows():
             fmt_row = next(fmt_rows) if fmt_rows is not None else None
             row: list = []
+            frow: list = []
             for idx, c_v in enumerate(r_v):
                 v = c_v.value
                 fmt = ""
+                fval = None
                 if fmt_row is not None and idx < len(fmt_row):
                     fmt = fmt_row[idx].number_format or ""
+                    fval = fmt_row[idx].value
                 if (
                     isinstance(v, (int, float))
                     and not isinstance(v, bool)
                     and _excel_format_is_percent(fmt)
+                    # Jericho specie factors are 1.15+ with a mistaken 0% format;
+                    # only true Excel percent fractions (0–1] become 'N%' tokens.
+                    and 0 < float(v) <= 1
                 ):
                     row.append(excel_percent_to_display(float(v)))
                 else:
                     row.append(v)
+                frow.append(fval if isinstance(fval, str) and fval.startswith("=") else None)
             rows.append(row)
+            formulas.append(frow)
         out[name] = rows
+        formula_map[name] = formulas
     wb_val.close()
     wb_fmt.close()
+    # Second pass: evaluate simple ROUND(a*b,n) woods when Excel left no cached value.
+    for name, rows in out.items():
+        _eval_round_product_formulas(
+            rows, formula_map.get(name, []), sheet_name=name, cross=out
+        )
     return out
 
 
@@ -904,17 +1006,39 @@ def _transform_row_prices(
     item_hint: str,
 ) -> list[str]:
     cells: list[str] = []
-    label, _ = _row_item_label(row)
+    label, label_j = _row_item_label(row)
     if not label:
         label = item_hint
+        label_j = -1
     if re.search(r"\bapprox", label, re.I):
         return []
     lab = sanitize_retail_text(label, multiplier)
     if not lab:
         return []
     cells.append(lab)
+    price_set = set(price_cols)
+    first_price = min(price_set) if price_set else len(row)
+    # Jericho-style multi-wood grids: keep Description / Size after the item code.
+    # Skip for single/dual price rows (Hope Works etc.) so prose mid-columns stay out.
+    if len(price_set) >= 4:
+        for j in range(max(label_j + 1, 0), min(label_j + 3, first_price)):
+            if j in price_set or j >= len(row):
+                continue
+            v = row[j]
+            if _is_wholesale_price(v) or _is_na_cell(v):
+                continue
+            if not isinstance(v, str):
+                continue
+            # Stop if this looks like another item code (start of a mirrored panel).
+            if j > label_j + 1 and ITEM_CODE_RE.match(v.strip()):
+                break
+            if j > label_j + 1 and v.strip().casefold() == lab.casefold():
+                break
+            t = sanitize_retail_text(v, multiplier)
+            if t and len(t) >= 2 and not is_dealer_terms_text(t):
+                cells.append(t)
     got_price = False
-    for j in sorted(set(price_cols)):
+    for j in sorted(price_set):
         if j >= len(row):
             cells.append("")
             continue
@@ -1017,7 +1141,7 @@ def _addon_cols_above(rows: list[list], start: int, width: int) -> set[int]:
     # Scan from the top — Kohler collection sheets put wood/Add headers on row 1
     # while priced SKUs can sit well past a short lookback window.
     finished_add_sentinels: list[int] = []
-    for row in rows[:start]:
+    for row in rows[: max(start, 1)]:
         for j in range(min(width + 1, len(row))):
             c = row[j]
             if not isinstance(c, str):
@@ -1027,21 +1151,80 @@ def _addon_cols_above(rows: list[list], start: int, width: int) -> set[int]:
                 if re.search(r"finished\s*prices?\s*add", c, re.I):
                     finished_add_sentinels.append(j)
     if finished_add_sentinels:
-        edge = min(finished_add_sentinels)
-        for j in range(edge, width + 1):
+        # Dual-panel books (Fenton): exclude from the *leftmost* Finished Prices Add
+        # through the end of that panel, and the rightmost Add itself — wood cols on
+        # the right panel stay eligible via _wood_cols_before_finished_add.
+        for edge in finished_add_sentinels:
+            bad.add(edge)
+        # Trailing noise to the right of the last Finished Prices Add
+        last = max(finished_add_sentinels)
+        for j in range(last, width + 1):
             bad.add(j)
     return bad
+
+
+def _wood_cols_before_finished_add(rows: list[list], width: int) -> set[int]:
+    """Jericho Master/Fenton: wood price columns sit left of 'Finished Prices Add'.
+
+    When two Add headers exist (mirrored Fenton panels), keep only the right panel
+    so markup twins are not duplicated.
+    """
+    add_cols: list[int] = []
+    for row in rows[:20]:
+        for j in range(min(width + 1, len(row))):
+            c = row[j]
+            if isinstance(c, str) and re.search(r"finished\s*prices?\s*add", c, re.I):
+                if j not in add_cols:
+                    add_cols.append(j)
+    if not add_cols:
+        return set()
+    add_cols.sort()
+    # Use the rightmost panel when dual-panel; otherwise the only Add.
+    add_j = add_cols[-1]
+    prev_add = add_cols[-2] if len(add_cols) >= 2 else -1
+    woods: set[int] = set()
+    # Walk left from Add over wood-header / blank band; stop at Item/Description/Size.
+    stop_re = re.compile(r"item\s*(?:no|#)|description|\bsize\b", re.I)
+    for row in rows[:12]:
+        for j in range(add_j - 1, prev_add, -1):
+            if j < 0 or j >= len(row):
+                continue
+            c = row[j]
+            if isinstance(c, str) and stop_re.search(c.strip()):
+                break
+            if isinstance(c, str) and re.search(
+                r"oak|maple|cherry|hickory|alder|elm|ash|qswo|walnut|rqswo",
+                c,
+                re.I,
+            ):
+                woods.add(j)
+            elif isinstance(c, str) and c.strip() and not ADD_ON_PRICE_COL_RE.search(c):
+                # Non-wood label (e.g. blank Size on second panel) — keep scanning
+                if stop_re.search(c):
+                    break
+    if woods:
+        # Fill contiguous band from min wood through add_j-1 (covers empty header cells)
+        return set(range(min(woods), add_j))
+    # Fallback: contiguous numerics commonly occupy the 6 cols left of Add
+    return set(range(max(prev_add + 1, add_j - 6), add_j))
 
 
 def _infer_price_cols(rows: list[list], start: int) -> set[int]:
     cols: set[int] = set()
     # Prefer a nearby header row above the current line when present
     header_block, width = _header_block_near(rows, start)
-    width = max(width, max((len(r) for r in rows[max(0, start - 60) : start + 1]), default=0))
+    width = max(
+        width,
+        max((len(r) for r in rows[: start + 1]), default=0),
+        max((len(r) for r in rows[max(0, start - 60) : start + 1]), default=0),
+    )
     item_cols = _item_code_cols(header_block, width)
     excluded = _excluded_price_header_cols(header_block, width) | _addon_cols_above(
         rows, start, width
     )
+    wood_band = _wood_cols_before_finished_add(rows, width) - excluded - item_cols
+    if wood_band and _labeled_cols_have_prices(rows, start, wood_band):
+        return wood_band
     labeled = _finished_price_cols(header_block, width) - excluded
     # Prefer finished/stained columns that actually hold values (Hilltop mirror left empty)
     if labeled:
