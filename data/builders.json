@@ -369,6 +369,12 @@
     "updated": "2026-11-25"
   },
   {
+    "name": "J&M Woodworking",
+    "pdf": "sheets/J_M_Woodworking.pdf",
+    "updated": "2026-11-26",
+    "price_list_date": "2026-04-08"
+  },
+  {
     "name": "J&R Woodworking",
     "pdf": "sheets/J_R_Woodworking.pdf",
     "updated": "2026-11-14"
@@ -379,9 +385,33 @@
     "updated": "2026-11-12"
   },
   {
+    "name": "Jericho Woodworking",
+    "pdf": "sheets/Jericho_Woodworking.pdf",
+    "updated": "2026-11-26",
+    "price_list_date": "2026-04-01"
+  },
+  {
     "name": "JF Hardwood Designs",
     "pdf": "sheets/JF_Hardwood_Designs.pdf",
     "updated": "2026-11-12"
+  },
+  {
+    "name": "Kid's Comfort",
+    "pdf": "sheets/Kid_s_Comfort.pdf",
+    "updated": "2026-11-26",
+    "price_list_date": "2027-01-01"
+  },
+  {
+    "name": "Kidron Woodcraft",
+    "pdf": "sheets/Kidron_Woodcraft.pdf",
+    "updated": "2026-11-26",
+    "price_list_date": "2026-04-01"
+  },
+  {
+    "name": "Kohler Woodcraft",
+    "pdf": "sheets/Kohler_Woodcraft.pdf",
+    "updated": "2026-11-26",
+    "price_list_date": "2026-05-01"
   },
   {
     "name": "Lamb Woodworking",
