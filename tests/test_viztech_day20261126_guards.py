@@ -220,8 +220,52 @@ def test_keep_item_mid_text_for_jm_notes_not_hope_works_tokens():
     assert _keep_item_mid_text("QUICK SHIP Storage Rails 6 Dr.")
     assert _keep_item_mid_text("Add $257. for Toe Kick")
     assert _keep_item_mid_text('10" front x 18" back')
+    assert _keep_item_mid_text("Dresser")
+    assert _keep_item_mid_text("Nightstand")
+    assert _keep_item_mid_text("King")
+    assert _keep_item_mid_text("Queen")
+    assert _keep_item_mid_text("Full")
+    assert _keep_item_mid_text("Twin")
     assert not _keep_item_mid_text("Chair")
     assert not _keep_item_mid_text("Upholstered")
+
+
+def test_bed_size_labels_kept_on_price_rows():
+    rows = [
+        ["Item", "Size", "Oak", "Maple"],
+        ["JR-8444-K", "King", 1633.113477824, 1448.113477824],
+        ["JR-8444-Q", "Queen", 1511.11010352, 1346.11010352],
+        ["JR-8444-F", "Full ", 1397.434542752, 1242.434542752],
+        ["JR-8444-T", "Twin", 1287.103354912, 1142.103354912],
+        [918, "King", 900, 950],
+    ]
+    out = _process_sheet("Beds", rows, multiplier=2.7, spots=[])
+    wide = [r.cells for r in out if r.kind == RowKind.WIDE]
+    by_code = {c[0]: c for c in wide}
+    assert "King" in by_code["JR-8444-K"]
+    assert "Queen" in by_code["JR-8444-Q"]
+    assert "Full" in by_code["JR-8444-F"]
+    assert "Twin" in by_code["JR-8444-T"]
+    assert "King" in by_code["918"]
+    # Dollar cells unchanged shape (layout-only)
+    assert by_code["JR-8444-K"][0] == "JR-8444-K"
+    assert any(c.startswith("$") for c in by_code["JR-8444-K"])
+
+
+def test_jm_furniture_descriptions_kept():
+    rows = [
+        ["Item #", "Description", "Br. Maple"],
+        [41, " Dresser ", 1110],
+        [42, "Chifferobe", 1700],
+        [43, "Armoire", 1330],
+        [46, " Nightstand ", 475],
+    ]
+    out = _process_sheet("Barrs Mills Mission Bedroom", rows, multiplier=2.7, spots=[])
+    wide = {c[0]: c for c in (r.cells for r in out if r.kind == RowKind.WIDE)}
+    assert wide["41"] == ["41", "Dresser", "$2,997"]
+    assert wide["42"] == ["42", "Chifferobe", "$4,590"]
+    assert wide["43"] == ["43", "Armoire", "$3,591"]
+    assert wide["46"] == ["46", "Nightstand", "$1,283"]
 
 
 def test_jericho_rb31_six_woods_and_plus_ten_formulas():
@@ -351,18 +395,18 @@ def test_jericho_prices_sheet_codes_join_onto_master():
             ["MCD333", "Mission CD Storage", '9" x 15" x 49"', 145],
         ],
         "Prices": [
-            ["Item No.", "Description"],
-            ["TH36", "Round Coffee Table Bev Top "],
-            ["ECO-3", "Economy Bookcase"],
-            ["MCD333", "Mission CD-Single Storage"],
+            ["Item No.", "Description", "Size"],
+            ["TH36", "Round Coffee Table Bev Top ", '36" Round & 18" High'],
+            ["ECO-3", "Economy Bookcase", '13.5" x 24" x 36"'],
+            ["MCD333", "Mission CD-Single Storage", '9" x 15" x 49"'],
         ],
     }
     formula_map = {
         "Prices": [
-            [None, None],
-            ["=ROUND(Master!D2*Markup!$B$6,2)", None],
-            ["=ROUND(Master!D3*Markup!$B$6,2)", None],
-            ["=ROUND(Master!D4*Markup!$B$6,2)", None],
+            [None, None, None],
+            ["=ROUND(Master!D2*Markup!$B$6,2)", None, None],
+            ["=ROUND(Master!D3*Markup!$B$6,2)", None, None],
+            ["=ROUND(Master!D4*Markup!$B$6,2)", None, None],
         ],
         "Master": [[None] * 4 for _ in range(4)],
     }
@@ -370,7 +414,44 @@ def test_jericho_prices_sheet_codes_join_onto_master():
     assert sheets["Master"][1][0] == "TH36"
     assert sheets["Master"][2][0] == "ECO-3"
     assert sheets["Master"][2][1] == "Economy Bookcase"
+    assert sheets["Master"][2][2] == '13.5" x 24" x 36"'
     assert sheets["Master"][3][1] == "Mission CD-Single Storage"
+
+
+def test_jericho_eco_uses_prices_name_and_13_5_size():
+    sheets = {
+        "Master": [
+            ["Item No.", "Description", "Size", "Oak", "Br. Maple"],
+            [None, "ECO-3  ", '14" x 24" x 36"', 195, 224],
+            [None, "ECO-4", '14" x 24" x 48"', 221, 254],
+            ["MCD333", "Mission CD Storage", '9" x 15" x 49"', 145, 167],
+        ],
+        "Prices": [
+            ["Item No.", "Description", "Size"],
+            ["ECO-3", "Economy Bookcase", '13.5" x 24" x 36"'],
+            ["ECO-4", "Economy Bookcase", '13.5" x 24" x 48"'],
+            ["MCD333", "Mission CD-Single Storage", '9" x 15" x 49"'],
+        ],
+    }
+    formula_map = {
+        "Prices": [
+            [None, None, None],
+            ["=ROUND(Master!D2*Markup!$B$6,2)", None, None],
+            ["=ROUND(Master!D3*Markup!$B$6,2)", None, None],
+            ["=ROUND(Master!D4*Markup!$B$6,2)", None, None],
+        ],
+        "Master": [[None] * 5 for _ in range(4)],
+    }
+    _join_prices_item_codes_onto_master(sheets, formula_map)
+    out = _process_sheet("Master", sheets["Master"], multiplier=2.7, spots=[])
+    wide = {c[0]: c for c in (r.cells for r in out if r.kind == RowKind.WIDE)}
+    assert wide["ECO-3"][1] == "Economy Bookcase"
+    assert '13.5"' in wide["ECO-3"][2]
+    assert wide["ECO-4"][1] == "Economy Bookcase"
+    assert '13.5"' in wide["ECO-4"][2]
+    assert wide["MCD333"][1] == "Mission CD-Single Storage"
+    # Prices unchanged vs Master wholesale → same retail
+    assert "$527" in wide["ECO-3"] and "$605" in wide["ECO-3"]
 
 
 def test_jm_toe_kick_mid_text_kept():
