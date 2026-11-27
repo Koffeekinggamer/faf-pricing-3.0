@@ -193,7 +193,8 @@ def section_title_from_path(path: Path) -> str:
 
 
 def section_dedupe_key(path: Path) -> str:
-    return section_title_from_path(path).casefold()
+    """One merge slot per workbook file (L&N main + bookcase share a section title)."""
+    return path.stem.casefold()
 
 
 @dataclass
@@ -1991,6 +1992,44 @@ def _wood_cols_before_finished_add(rows: list[list], width: int) -> set[int]:
     return set(range(max(prev_add + 1, add_j - 6), add_j))
 
 
+def _has_fabric_or_option_headers(header_block: list[list], before_col: int) -> bool:
+    """Comfort-style surcharges only; skip L&N unfinished wood bands."""
+    for h in header_block:
+        for j, c in enumerate(h):
+            if j >= before_col or not isinstance(c, str):
+                continue
+            s = c.casefold()
+            if any(
+                k in s
+                for k in (
+                    "fabric",
+                    "leather",
+                    "swivel",
+                    "lay flat",
+                    "usb",
+                    "head tilt",
+                    "electric",
+                )
+            ):
+                return True
+    return False
+
+
+def _leading_option_price_cols(
+    rows: list[list], start: int, before_col: int
+) -> set[int]:
+    """Lambright Comfort: electric/swivel/USB surcharges before fabric grade columns."""
+    row = rows[start]
+    _, label_j = _row_item_label(row)
+    lo = max((label_j + 1) if label_j >= 0 else 1, 1)
+    hi = max(lo, before_col)
+    return {
+        j
+        for j in range(lo, hi)
+        if j < len(row) and _is_wholesale_price(row[j], allow_yearish=True)
+    }
+
+
 def _infer_price_cols(rows: list[list], start: int) -> set[int]:
     cols: set[int] = set()
     # Prefer a nearby header row above the current line when present
@@ -2023,11 +2062,17 @@ def _infer_price_cols(rows: list[list], start: int) -> set[int]:
             )
         }
         if populated and _labeled_cols_have_prices(rows, start, populated):
-            return populated - item_cols - excluded
+            chosen = populated - item_cols - excluded
+            if chosen and _has_fabric_or_option_headers(header_block, min(chosen)):
+                chosen |= _leading_option_price_cols(rows, start, min(chosen))
+            return chosen
         # Fin|Unf / fabric labels with real values win over sparse option-line noise
         # (Quick Ship chairs after Oregon Arm) even when hits < misses.
         if populated and len(populated) >= 1:
-            return populated - item_cols - excluded
+            chosen = populated - item_cols - excluded
+            if chosen and _has_fabric_or_option_headers(header_block, min(chosen)):
+                chosen |= _leading_option_price_cols(rows, start, min(chosen))
+            return chosen
     if labeled and _labeled_cols_have_prices(rows, start, labeled):
         return labeled - item_cols - excluded
     if labeled:
@@ -2736,6 +2781,10 @@ def merge_builder_files(
     multiplier: float,
 ) -> ViztechBuildResult:
     key = builder_name.casefold()
+    if key == "kountry knob tables":
+        mains = [p for p in paths if re.search(r"KKT_Pricelist", p.name, re.I)]
+        if mains:
+            paths = mains
     if key == "aj's furniture":
         paths = [
             p
