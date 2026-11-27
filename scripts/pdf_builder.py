@@ -100,6 +100,7 @@ def build_retail_pdf_processed(
     updated: str,
     output_path: Path,
     all_landscape: bool = False,
+    empty_table_cells_as_dash: bool = True,
 ) -> int:
     assert_no_approx(builder_name, updated)
     processed = collapse_blank_rows(processed)
@@ -215,6 +216,7 @@ def build_retail_pdf_processed(
             body_style=body,
             section_title=section_title,
             lock_landscape=all_landscape,
+            empty_as_dash=empty_table_cells_as_dash,
         )
         lead = [_p(t, title_style) for t in titles]
         for s in sections[:-1]:

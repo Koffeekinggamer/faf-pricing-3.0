@@ -225,6 +225,8 @@ def main() -> int:
             builder_name=builder_name,
             updated=updated,
             output_path=pdf_path,
+            all_landscape=True,
+            empty_table_cells_as_dash=False,
         )
         print(
             f"Wrote {pages}-page retail PDF "

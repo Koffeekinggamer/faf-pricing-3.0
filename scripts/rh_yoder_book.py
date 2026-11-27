@@ -35,6 +35,9 @@ WOOD_HINT_RE = re.compile(
 SOLID_RE = re.compile(r"^\s*solid(?:\s*top)?\s*$", re.I)
 LEAF_RE = re.compile(r"^\s*\d+\s*leaf\b", re.I)
 DASH_RE = re.compile(r"^\s*[-–—]\s*$")
+TABLE_RUSTIC_DEDUCT_RE = re.compile(
+    r"deduct\s+10%?\s+for\s+rustic\s+species", re.I
+)
 INCLUDED_RE = re.compile(r"^\s*included\s*$", re.I)
 DISCONTINUED_RE = re.compile(r"discontinued", re.I)
 SIZE_LABEL_RE = re.compile(r"^\s*size\s*$", re.I)
@@ -175,9 +178,63 @@ def _is_wood_label(text: str) -> bool:
         return False
     if text.casefold() in {"add:", "add"}:
         return False
+    if re.search(r"deduct\s+\d+\s*%|deduct\s+10", text, re.I):
+        return False
     return bool(WOOD_HINT_RE.search(text)) or bool(
         re.search(r"barn\s*wood|reclaimed", text, re.I)
     )
+
+
+def _append_wide_header(out: list[ProcessedRow], headers: list[str]) -> None:
+    """Header row in the WIDE buffer so PDF layout keeps it with price rows."""
+    out.append(ProcessedRow(RowKind.WIDE, headers))
+
+
+def _table_column_headers(
+    groups: list[tuple[str, int, int]], size_row: list
+) -> list[str]:
+    cols = ["Size"]
+    for lab, start, end in groups:
+        for j in range(start, end + 1):
+            leaf = _cell_str(size_row[j]) if j < len(size_row) else ""
+            if not leaf or _is_dash(leaf):
+                leaf = "Solid"
+            cols.append(f"{lab}\n{leaf}")
+    return cols
+
+
+def _drop_empty_wood_group(
+    title: str,
+    label: str,
+    rows: list[list],
+    hidden: set[int],
+    data_start_i: int,
+    data_end_i: int,
+    start: int,
+    end: int,
+) -> bool:
+    """Omit wood groups that are entirely held or have no numeric prices."""
+    t = title.casefold()
+    l = label.casefold()
+    if "north star" in t and any(
+        x in l for x in ("qswo", "hickory", "white oak")
+    ):
+        return True
+    if "iron forge" in t and "walnut" in l:
+        return True
+    for i in range(data_start_i, data_end_i):
+        r1 = i + 1
+        if r1 in hidden:
+            continue
+        drow = rows[i]
+        for col in range(start, end + 1):
+            col1 = col + 1
+            if _held_cell(r1, col1):
+                continue
+            c = drow[col] if col < len(drow) else None
+            if _is_number(c):
+                return False
+    return True
 
 
 def _short_wood_label(text: str) -> str:
@@ -264,6 +321,29 @@ def _held_row_entirely(row_1based: int) -> bool:
     return row_1based in HELD_SINCLAIR_BENCH_ROWS or row_1based in HELD_TIFTON_LE_ROWS
 
 
+def _count_held_wholesale_cells(rows: list[list], hidden: set[int]) -> dict[str, int]:
+    """Count priced source cells omitted because they are on the held list."""
+    counts = {"chairs": 0, "tables": 0, "servers": 0, "options": 0}
+    for i, row in enumerate(rows):
+        r1 = i + 1
+        if r1 in hidden or r1 in HELD_SINCLAIR_BENCH_ROWS or r1 in HELD_TIFTON_LE_ROWS:
+            continue
+        if 28 <= r1 <= 717:
+            zone = "chairs"
+        elif 763 <= r1 <= 2249:
+            zone = "tables"
+        elif 2279 <= r1 <= 2353:
+            zone = "servers"
+        elif 718 <= r1 <= 2372:
+            zone = "options"
+        else:
+            continue
+        for j, c in enumerate(row):
+            if _is_number(c) and _held_cell(r1, j + 1):
+                counts[zone] += 1
+    return counts
+
+
 def process_rh_yoder_workbook(
     path: Path, *, multiplier: float = MULTIPLIER_DEFAULT
 ) -> RhYoderResult:
@@ -299,12 +379,22 @@ def process_rh_yoder_workbook(
     _process_specialty_finishes(rows, hidden, out, stats["options"], multiplier)
 
     cleaned = collapse_blank_rows(out)
+    held_audit = _count_held_wholesale_cells(rows, hidden)
+    held_whole_bench = sum(
+        1 for r in HELD_SINCLAIR_BENCH_ROWS.union(HELD_TIFTON_LE_ROWS)
+        if r not in hidden
+        for j, c in enumerate(rows[r - 1])
+        if 2 <= j + 1 <= 7 and _is_number(c)
+    )
+    held_audit["chairs"] += held_whole_bench
     summary = {k: v.as_dict() for k, v in stats.items()}
+    for zone, n in held_audit.items():
+        summary[zone]["held_skipped"] = n
     summary["totals"] = {
         "wood_prices": sum(v.wood_prices for v in stats.values()),
         "seat_addons": sum(v.seat_addons for v in stats.values()),
         "dollar_addons": sum(v.dollar_addons for v in stats.values()),
-        "held_skipped": sum(v.held_skipped for v in stats.values()),
+        "held_skipped": sum(held_audit.values()),
         "item_rows": sum(v.item_rows for v in stats.values()),
         "priced_cells": sum(
             v.wood_prices + v.seat_addons + v.dollar_addons for v in stats.values()
@@ -373,11 +463,8 @@ def _process_chairs(
                     [sanitize_retail_text(series, multiplier) or series],
                 )
             )
-            out.append(
-                ProcessedRow(
-                    RowKind.TABLE_HEADER,
-                    ["Item", *CHAIR_WOOD_LABELS, *CHAIR_SEAT_LABELS],
-                )
+            _append_wide_header(
+                out, ["Item", *CHAIR_WOOD_LABELS, *CHAIR_SEAT_LABELS]
             )
             continue
 
@@ -389,11 +476,8 @@ def _process_chairs(
                 continue
             lab = sanitize_retail_text(series, multiplier) or series
             out.append(ProcessedRow(RowKind.SUBHEAD, [lab]))
-            out.append(
-                ProcessedRow(
-                    RowKind.TABLE_HEADER,
-                    ["Item", *CHAIR_WOOD_LABELS, *CHAIR_SEAT_LABELS],
-                )
+            _append_wide_header(
+                out, ["Item", *CHAIR_WOOD_LABELS, *CHAIR_SEAT_LABELS]
             )
             continue
 
@@ -498,6 +582,58 @@ def _parse_table_groups(
     return groups
 
 
+def _peek_table_data_end(
+    rows: list[list], hidden: set[int], size_i: int, title: str
+) -> int:
+    j = size_i + 1
+    while j < min(len(rows), 2249):
+        r1d = j + 1
+        if r1d in hidden:
+            j += 1
+            continue
+        drow = rows[j]
+        da = drow[0] if drow else None
+        if isinstance(da, str) and da.strip():
+            if _is_wood_label(str(drow[1] if len(drow) > 1 else "")) or (
+                re.search(r"\btable\b|reclaimed barn wood top", da, re.I)
+                and not any(_is_number(c) for c in drow[1:6])
+                and not re.match(r"^\d", da.strip())
+                and not re.search(r"x", da, re.I)
+            ):
+                break
+            if SIZE_LABEL_RE.match(da.strip()) and any(
+                isinstance(c, str) and SOLID_RE.match(c.strip()) for c in drow
+            ):
+                break
+        j += 1
+    return j
+
+
+def _table_block_rustic_deduct_note(drow: list, multiplier: float) -> str:
+    mcol = drow[12] if len(drow) > 12 else None
+    if not isinstance(mcol, str) or not TABLE_RUSTIC_DEDUCT_RE.search(mcol):
+        return ""
+    if re.search(r"any\s+rustic", mcol, re.I):
+        return ""
+    return _sanitize_note(mcol, multiplier, allow_dollar_multiply=False)
+
+
+def _emit_table_rustic_note(
+    out: list[ProcessedRow],
+    drow: list,
+    multiplier: float,
+    *,
+    emitted: set[int],
+    r1: int,
+) -> None:
+    if r1 in emitted:
+        return
+    rustic = _table_block_rustic_deduct_note(drow, multiplier)
+    if rustic:
+        emitted.add(r1)
+        out.append(ProcessedRow(RowKind.PROSE, [rustic]))
+
+
 def _process_tables(
     rows: list[list],
     hidden: set[int],
@@ -505,6 +641,7 @@ def _process_tables(
     st: ZoneStats,
     multiplier: float,
 ) -> None:
+    rustic_note_rows: set[int] = set()
     i = 762  # 0-based → Excel row 763
     while i < min(len(rows), 2249):
         r1 = i + 1
@@ -605,30 +742,31 @@ def _process_tables(
             i += 1
             continue
 
+        data_end = _peek_table_data_end(rows, hidden, size_i, title)
+        groups = [
+            g
+            for g in groups
+            if not _drop_empty_wood_group(
+                title, g[0], rows, hidden, size_i + 1, data_end, g[1], g[2]
+            )
+        ]
+        if not groups:
+            for ti in range(size_i + 1, data_end):
+                if ti + 1 in hidden:
+                    continue
+                _emit_table_rustic_note(
+                    out, rows[ti], multiplier, emitted=rustic_note_rows, r1=ti + 1
+                )
+            i = data_end
+            continue
+
         out.append(
             ProcessedRow(
                 RowKind.SUBHEAD,
                 [sanitize_retail_text(title, multiplier) or title],
             )
         )
-        # Header: Size + wood labels (leaf configs as prose under subhead if useful)
-        leaf_bits = []
-        for lab, start, end in groups:
-            leafs = [
-                _cell_str(size_row[j])
-                for j in range(start, end + 1)
-                if j < len(size_row) and isinstance(size_row[j], str)
-            ]
-            if leafs:
-                leaf_bits.append(f"{lab}: {', '.join(leafs)}")
-        if leaf_bits:
-            out.append(ProcessedRow(RowKind.PROSE, ["; ".join(leaf_bits[:4])]))
-        out.append(
-            ProcessedRow(
-                RowKind.TABLE_HEADER,
-                ["Size", *[g[0] for g in groups]],
-            )
-        )
+        _append_wide_header(out, _table_column_headers(groups, size_row))
 
         # Data rows
         j = size_i + 1
@@ -653,6 +791,17 @@ def _process_tables(
                 ):
                     # Continuation block same series with new woods — handle as new title
                     break
+            _emit_table_rustic_note(
+                out, drow, multiplier, emitted=rustic_note_rows, r1=r1d
+            )
+            if (
+                r1d in rustic_note_rows
+                and not any(_is_number(c) for c in drow[1:])
+                and not (_cell_str(da) and _cell_str(da).strip())
+            ):
+                j += 1
+                continue
+
             # Footnotes
             if isinstance(da, str) and da.strip() and not any(
                 _is_number(c) for c in drow[1:]
@@ -668,12 +817,18 @@ def _process_tables(
                             note = f"{note}; {n2}" if note else n2
                 if note:
                     out.append(ProcessedRow(RowKind.PROSE, [note]))
+                _emit_table_rustic_note(
+                    out, drow, multiplier, emitted=rustic_note_rows, r1=r1d
+                )
                 j += 1
                 # If this looks like end-of-block prose, keep going until blank/title
                 continue
 
             size_label = _cell_str(da) if da is not None else ""
             if not size_label and not any(_is_number(c) for c in drow[1:]):
+                _emit_table_rustic_note(
+                    out, drow, multiplier, emitted=rustic_note_rows, r1=r1d
+                )
                 j += 1
                 continue
             if isinstance(da, (int, float)) and not isinstance(da, bool):
@@ -725,7 +880,29 @@ def _process_tables(
                 st.item_rows += 1
             j += 1
 
+        trail = j
+        while trail < data_end:
+            r1t = trail + 1
+            if r1t in hidden:
+                trail += 1
+                continue
+            _emit_table_rustic_note(
+                out,
+                rows[trail],
+                multiplier,
+                emitted=rustic_note_rows,
+                r1=trail + 1,
+            )
+            trail += 1
+
         i = j
+
+    for r1 in range(764, 2250):
+        if r1 in hidden:
+            continue
+        _emit_table_rustic_note(
+            out, rows[r1 - 1], multiplier, emitted=rustic_note_rows, r1=r1
+        )
 
 
 def _process_servers(
@@ -751,6 +928,25 @@ def _process_servers(
         if _drop_contact_or_terms(a):
             i += 1
             continue
+        if SIZE_LABEL_RE.match(a):
+            i += 1
+            continue
+        deduct_only = [
+            c
+            for c in row[1:12]
+            if isinstance(c, str) and re.search(r"deduct\s+10", c, re.I)
+        ]
+        if deduct_only and not any(_is_number(c) for c in row[1:12]):
+            for c in deduct_only:
+                note = _sanitize_note(c, multiplier, allow_dollar_multiply=False)
+                if note:
+                    out.append(ProcessedRow(RowKind.PROSE, [note]))
+            if a and not SIZE_LABEL_RE.match(a):
+                extra = _sanitize_note(a, multiplier, allow_dollar_multiply=True)
+                if extra:
+                    out.append(ProcessedRow(RowKind.PROSE, [extra]))
+            i += 1
+            continue
         wood_labs = [
             (j, _short_wood_label(c))
             for j, c in enumerate(row)
@@ -759,30 +955,24 @@ def _process_servers(
         if a and wood_labs and not any(_is_number(c) for c in row[1:10]):
             series = a
             wood_cols = [(lab, j) for j, lab in wood_labs]
-            # Barn wood add column
-            for j, c in enumerate(row):
-                if isinstance(c, str) and re.search(r"barn\s*wood", c, re.I):
-                    wood_cols.append(("Barn Wood Top add", j))
+            barn_j = next(
+                (
+                    j
+                    for j, c in enumerate(row)
+                    if isinstance(c, str) and re.search(r"barn\s*wood", c, re.I)
+                ),
+                None,
+            )
+            if barn_j is not None:
+                wood_cols = [(lab, colj) for lab, colj in wood_cols if colj != barn_j]
+                wood_cols.append(("Barn Wood Top add", barn_j))
             out.append(
                 ProcessedRow(
                     RowKind.SUBHEAD,
                     [sanitize_retail_text(series, multiplier) or series],
                 )
             )
-            out.append(
-                ProcessedRow(
-                    RowKind.TABLE_HEADER,
-                    ["Size", *[w[0] for w in wood_cols]],
-                )
-            )
-            i += 1
-            continue
-        if isinstance(row[8] if len(row) > 8 else None, str) and re.search(
-            r"deduct\s+10", str(row[8]), re.I
-        ):
-            note = _sanitize_note(str(row[8]), multiplier, allow_dollar_multiply=False)
-            if note:
-                out.append(ProcessedRow(RowKind.PROSE, [note]))
+            _append_wide_header(out, ["Size", *[w[0] for w in wood_cols]])
             i += 1
             continue
         if a and not any(_is_number(c) for c in row[1:12]):
@@ -905,12 +1095,17 @@ def _process_table_options(
                 note = _sanitize_note(f"{a}: {k}", multiplier, allow_dollar_multiply=True)
                 if note:
                     out.append(ProcessedRow(RowKind.PROSE, [note]))
-        elif isinstance(k, str) and re.search(r"%|same price|no charge", k, re.I):
-            note = _sanitize_note(f"{a}: {k}", multiplier, allow_dollar_multiply=False)
+        elif isinstance(k, str) and re.search(
+            r"%|same price|no charge|add\s+\d+", k, re.I
+        ):
+            label = re.sub(r"\s*\(unfinished\s+price\)\s*", " ", a, flags=re.I)
+            label = re.sub(r"\s+", " ", label).strip()
+            note = _sanitize_note(f"{label}: {k}", multiplier, allow_dollar_multiply=False)
             if note:
                 out.append(ProcessedRow(RowKind.PROSE, [note]))
         else:
-            note = _sanitize_note(a, multiplier, allow_dollar_multiply=False)
+            label = re.sub(r"\s*\(unfinished\s+price\)\s*", " ", a, flags=re.I)
+            note = _sanitize_note(label, multiplier, allow_dollar_multiply=False)
             if note:
                 out.append(ProcessedRow(RowKind.PROSE, [note]))
 
@@ -930,12 +1125,7 @@ def _process_specialty_finishes(
         (4, "Cat. 2 / Paint / Wire Brush / Distress"),
         (6, "Cat. 3 color"),
     ]
-    out.append(
-        ProcessedRow(
-            RowKind.TABLE_HEADER,
-            ["Item", *[lab for _, lab in finish_cols]],
-        )
-    )
+    _append_wide_header(out, ["Item", *[lab for _, lab in finish_cols]])
     for i in range(2363, min(len(rows), 2372)):
         r1 = i + 1
         if r1 in hidden:
