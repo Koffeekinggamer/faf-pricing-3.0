@@ -655,6 +655,88 @@ def _drop_row(row: list, joined: str) -> bool:
     return False
 
 
+def _is_finished_prices_band_label(cell: str) -> bool:
+    """Column-band title (L&N ESTIMATED FINISHED PRICE), not KKT prose notes."""
+    s = cell.strip()
+    if not s or len(s) > 72:
+        return False
+    if re.search(r"add\s+\d+\s*%|[\u2022\u2023]|^\s*[\u2022\-]\s", s, re.I):
+        return False
+    if re.search(r"\bto\s+finished\s+price\b", s, re.I):
+        return False
+    if re.search(r"estimated\s+finish(?:ing)?(?:\s+per\s+piece|\s+prices?)", s, re.I):
+        return False
+    return bool(
+        re.search(
+            r"(?:^|\s)(?:estimated\s+)?(?<!un)finished\s+prices?\s*$",
+            s,
+            re.I,
+        )
+    )
+
+
+def _estimated_finished_band_cols(header_rows: list[list], width: int) -> set[int]:
+    """L&N-style estimated-finished wood columns (not the unfinished band)."""
+    band_starts = [
+        j
+        for h in header_rows
+        for j, c in enumerate(h)
+        if isinstance(c, str) and _is_finished_prices_band_label(c)
+    ]
+    if not band_starts:
+        return set()
+    start = min(band_starts)
+    unfinished: set[int] = set()
+    for h in header_rows:
+        for j, c in enumerate(h):
+            if isinstance(c, str) and re.search(r"\bunfinished\b", c, re.I) and not re.search(
+                r"(?<!un)finished", c, re.I
+            ):
+                if j < start:
+                    unfinished.add(j)
+    expanded: set[int] = set()
+    finish_per_piece: set[int] = set()
+    for h in header_rows:
+        joined = " ".join(c.strip() for c in h if isinstance(c, str) and c.strip())
+        if not joined:
+            continue
+        if not _HEADER_HINT_RE.search(joined) and not re.search(
+            r"estimated\s+finished|unfinished|item\s*#|oak|cherry|maple",
+            joined,
+            re.I,
+        ):
+            continue
+        if re.search(r"\bdoor\s+add\b|\badds?\s+for\b", joined, re.I):
+            continue
+        for j in range(start, min(width + 1, len(h))):
+            c = h[j]
+            if isinstance(c, str) and c.strip():
+                if re.search(r"\bunfinished\b", c, re.I) and not re.search(
+                    r"(?<!un)finished", c, re.I
+                ):
+                    break
+                if re.search(
+                    r"estimated\s+finish(?:ing)?(?:\s+per\s+piece|\s+prices?)",
+                    c,
+                    re.I,
+                ):
+                    finish_per_piece.add(j)
+                    break
+                if re.search(
+                    r"^(?:item\s*(?:#|no|number)|description|\bsize\b)$",
+                    c.strip(),
+                    re.I,
+                ):
+                    break
+                if _is_finished_prices_band_label(c) and not re.search(
+                    r"\b(?:oak|cherry|maple|walnut|hickory|elm|qswo)\b", c, re.I
+                ):
+                    continue
+                expanded.add(j)
+    expanded -= finish_per_piece
+    return expanded - unfinished if expanded else set()
+
+
 def _finished_price_cols(header_rows: list[list], width: int) -> set[int]:
     unfinished: set[int] = set()
     finished: set[int] = set()
@@ -711,7 +793,7 @@ def _finished_price_cols(header_rows: list[list], width: int) -> set[int]:
         for h in header_rows
         for j, c in enumerate(h)
         if isinstance(c, str)
-        and re.search(r"(?:estimated\s+)?(?<!un)finished\s*prices?", c, re.I)
+        and _is_finished_prices_band_label(c)
         and not ADD_ON_PRICE_COL_RE.search(c)
         and not re.search(r"finished\s*add\b", c, re.I)
         and not re.search(
@@ -759,9 +841,7 @@ def _finished_price_cols(header_rows: list[list], width: int) -> set[int]:
                     ):
                         break
                     # Skip the band title cell; wood names under it stay eligible.
-                    if re.search(
-                        r"(?:estimated\s+)?(?<!un)finished\s*prices?", c, re.I
-                    ) and not re.search(
+                    if _is_finished_prices_band_label(c) and not re.search(
                         r"\b(?:oak|cherry|maple|walnut|hickory|elm|qswo)\b", c, re.I
                     ):
                         continue
@@ -2036,6 +2116,9 @@ def _infer_price_cols(rows: list[list], start: int) -> set[int]:
     header_block, width = _header_block_near(rows, start)
     item_cols = _item_code_cols(header_block, width)
     excluded_early = _excluded_price_header_cols(header_block, width)
+    est_band = _estimated_finished_band_cols(header_block, width)
+    if est_band and _labeled_cols_have_prices(rows, start, est_band):
+        return est_band - item_cols - excluded_early
     only_finished = _finished_only_wood_cols(rows, start)
     if only_finished and _labeled_cols_have_prices(rows, start, only_finished):
         return only_finished - item_cols - excluded_early

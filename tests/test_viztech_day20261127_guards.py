@@ -315,7 +315,7 @@ def test_ln_estimated_finish_price_alias_excluded():
     assert fin == {8, 9, 10, 11, 12}
     assert 13 not in fin
     ad3660_fin = (801.0, 802.0, 803.0, 804.0, 805.0)
-    fob_fin = (601.0, 602.0, 603.0, 604.0, 605.0)
+    fob_fin = (591.0, 592.0, 593.0, 594.0, 595.0)
     afd24_fin = (851.0, 852.0, 853.0, 854.0, 855.0)
     rows = headers + [
         ["AD3660-O", "Open Bookcase", 3, 701, 702, 703, 704, 705, *ad3660_fin, 44],
@@ -680,15 +680,64 @@ def test_comfort_72_ez_sleeper_all_grades():
     assert _dollar_tokens(wide) == [_r(v) for v in (461, 462, 463, 464, 465)]
 
 
+def test_kkt_pedestal_table_four_finished_woods():
+    """Dual-panel Fin|Unf headers must not collapse to a single wood (pedestal tables)."""
+    woods = (401.0, 411.0, 421.0, 431.0)
+    rows = [
+        ["Item Number", "Description", "R. Cherry\nSap Cherry\nOak", None, "R. Hickory\nR. QSWO\nBrown Maple", None, "Elm, Cherry\nHickory\nHard Maple\nR. Walnut", None, "QWSO", None, "Description", "Oak"],
+        [None, None, "Finished", "Unfinished", "Finished", "Unfinished", "Finished", "Unfinished", "Finished", "Unfinished", None, "Finished"],
+        [None, None, None, None, None, None, None, None, None, None, None, None],
+        [None, "•  For Pub Table - Add 10% to Finished Pricee", None, None, None, None, None, None, None, None, None, None],
+        ["701-3636", "Solid Top", woods[0], 301, woods[1], 311, woods[2], 321, woods[3], 331, "Solid Top", woods[0]],
+    ]
+    out = _process_sheet("Single Pedestal Tables", rows, multiplier=2.7, spots=[])
+    wide = {c[0]: c for c in (r.cells for r in out if r.kind == RowKind.WIDE)}["701-3636"]
+    assert _dollar_tokens(wide) == [_r(v) for v in woods]
+
+
+def test_ln_merged_row_finished_band_only_no_adj_shelf_dollars():
+    """Bookcase rows: five finished woods only — adj-shelf qty is not a price column."""
+    fin = (851.0, 852.0, 853.0, 854.0, 855.0)
+    unf = (751.0, 752.0, 753.0, 754.0, 755.0)
+    rows = [
+        [None, None, None, "UNFINISHED", None, None, None, None, "ESTIMATED FINISHED PRICE"],
+        [
+            "Item #",
+            "Description",
+            "Adj. Shelves",
+            "Oak",
+            "Cherry",
+            "Walnut",
+            "R. Cherry Br. Maple",
+            "R. Walnut",
+            "Oak",
+            "Cherry",
+            "Walnut",
+            "R. Cherry Br. Maple",
+            "R. Walnut",
+        ],
+        ["BBC-3836-O", "Open Bookcase", 4, *unf, *fin],
+        ["AFD24", "File Desk", "74x24x31", *unf, *fin],
+    ]
+    out = _process_sheet("Bookcases", rows, multiplier=2.7, spots=[])
+    wide = {c[0]: c for c in (r.cells for r in out if r.kind == RowKind.WIDE)}
+    assert _dollar_tokens(wide["BBC-3836-O"]) == [_r(v) for v in fin]
+    assert _r(4) not in wide["BBC-3836-O"]
+    assert _dollar_tokens(wide["AFD24"]) == [_r(v) for v in fin]
+    for v in unf:
+        assert _r(v) not in wide["AFD24"]
+
+
 def test_comfort_encore_row_keeps_option_adds():
-    grades = (705.0, 706.0, 707.0, 708.0, 709.0)
+    tilt, swivel = 51.0, 31.0
+    grades = (701.0, 702.0, 703.0, 704.0, 705.0)
     rows = [
         [None, None, None, None, "Swivel", "Lay Flat", None, None, "Standard\nFabric", "Premium \nFabric", "Ultra \nLeather", "Italian Cowhide Leather", "Heartland\nFabric"],
-        ['31" Encore Zerowall Recliner', "Standard", 125.0, "N/A", 75.0, "", "", "Standard", *grades],
+        ['31" Encore Zerowall Recliner', "Standard", tilt, "N/A", swivel, "", "", "Standard", *grades],
     ]
     out = _process_sheet("Wholesale", rows, multiplier=2.7, spots=[])
     wide = [r.cells for r in out if r.kind == RowKind.WIDE][0]
-    assert _dollar_tokens(wide) == [_r(125), _r(75), *[_r(v) for v in grades]]
+    assert _dollar_tokens(wide) == [_r(tilt), _r(swivel), *[_r(v) for v in grades]]
 
 
 def test_kkt_merge_prefers_main_workbook_over_quick_ship_addon():
