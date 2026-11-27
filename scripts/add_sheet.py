@@ -96,6 +96,11 @@ from scripts.country_view_oak_book import (
     is_country_view_oak_workbook,
     process_country_view_oak_workbook,
 )
+from scripts.rh_yoder_book import (
+    is_rh_yoder_workbook,
+    process_rh_yoder_workbook,
+    rh_yoder_forbidden_text,
+)
 from scripts.pdf_builder import build_retail_pdf, build_retail_pdf_processed
 from scripts.pricing_lib import assert_no_approx
 from scripts.read_dealer_file import (
@@ -205,7 +210,32 @@ def main() -> int:
     pdf_path = SHEETS_DIR / pdf_name
     rel_pdf = f"sheets/{pdf_name}"
 
-    if is_country_view_oak_workbook(source):
+    if is_rh_yoder_workbook(source):
+        result = process_rh_yoder_workbook(source, multiplier=multiplier)
+        bad = rh_yoder_forbidden_text(result.rows)
+        if bad:
+            print(
+                "Retail PDF would contain dealer-only wording: "
+                + "; ".join(bad[:3]),
+                file=sys.stderr,
+            )
+            return 1
+        pages = build_retail_pdf_processed(
+            result.rows,
+            builder_name=builder_name,
+            updated=updated,
+            output_path=pdf_path,
+            all_landscape=True,
+            empty_table_cells_as_dash=False,
+        )
+        print(
+            f"Wrote {pages}-page retail PDF "
+            f"({result.stats.get('totals', {}).get('priced_cells', '?')} priced cells "
+            f"@ {multiplier})",
+            file=sys.stderr,
+        )
+        print(f"RH Yoder zone stats: {result.stats}", file=sys.stderr)
+    elif is_country_view_oak_workbook(source):
         processed, stats = process_country_view_oak_workbook(
             source, multiplier=multiplier
         )

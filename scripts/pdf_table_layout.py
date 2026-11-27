@@ -137,10 +137,12 @@ def _scale_widths(
     return protected + scaled_rest
 
 
-def _cell_para(text: str, style: ParagraphStyle) -> Paragraph:
+def _cell_para(text: str, style: ParagraphStyle, *, empty_as_dash: bool = True) -> Paragraph:
     t = (text or "").strip()
     if not t or dash_or_empty(t):
-        t = "—"
+        t = "" if not empty_as_dash else "—"
+    if not t:
+        return Paragraph("", style)
     return Paragraph(escape_for_paragraph_markup(t), style)
 
 
@@ -289,6 +291,7 @@ def wide_table_flowables(
     body_style: ParagraphStyle,
     section_title: str | None = None,
     lock_landscape: bool = False,
+    empty_as_dash: bool = True,
 ) -> list:
     rows = prune_empty_columns([[str(c) for c in r] for r in raw_rows])
     rows = [
@@ -392,7 +395,9 @@ def wide_table_flowables(
                 st = header_cell_style
             else:
                 st = cell_style
-            data.append([_cell_para(c, st) for c in row])
+            data.append(
+                [_cell_para(c, st, empty_as_dash=empty_as_dash) for c in row]
+            )
         tbl = Table(data, colWidths=col_widths, repeatRows=header_rows)
         style = _table_style(header_rows, font_size)
         if title_rows:
