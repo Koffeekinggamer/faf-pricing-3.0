@@ -10,6 +10,7 @@ import openpyxl
 
 from scripts.dealer_book import RowKind
 from scripts.rh_yoder_book import (
+    _drop_empty_wood_group,
     _parse_table_groups,
     held_items_for_pr,
     printed_whole_dollar,
@@ -94,8 +95,8 @@ def _build_synthetic_workbook():
     ws["F29"] = _W5
     ws["G29"] = _W6
     ws["H29"] = "Included"
-    ws["I29"] = 32
-    ws["J29"] = 98
+    ws["I29"] = 29.0
+    ws["J29"] = 96.0
     ws["A34"] = "Albany"
     ws["A35"] = "Side Chair"
     ws["B35"] = 150.0
@@ -146,19 +147,32 @@ def _build_synthetic_workbook():
     ws["B766"] = 400.0
     ws["M766"] = "Deduct 10% for Rustic Species"
     ws["A720"] = "For Oak and Brown Maple chairs with Cherry seats"
-    ws["K720"] = 10
+    ws["K720"] = 11.0
     ws["A2264"] = "Leaf Locks  (cost/leaf)"
-    ws["K2264"] = 18
+    ws["K2264"] = 17.0
     ws["A2265"] = "Magnetic Skirts Available"
     ws["K2265"] = "$45 per leaf"
     ws["A2267"] = 'Thickness-Upgrade from 1" thick top to 1 1/4". Cost for all wood species. (unfinished price)'
     ws["K2267"] = "add 22%"
     ws["A2361"] = "Specialty Finishes"
     ws["A2364"] = "Chairs"
-    ws["B2364"] = 16
-    ws["C2364"] = 40
-    ws["E2364"] = 30
-    ws["G2364"] = 54
+    ws["B2364"] = 15.0
+    ws["C2364"] = 39.0
+    ws["E2364"] = 31.0
+    ws["G2364"] = 53.0
+    # Iron Forge: Live Edge walnut held (J1288–J1291); without Live Edge keeps walnut
+    ws["A1286"] = "Iron Forge Table-Live Edge"
+    ws["J1286"] = "Walnut"
+    ws["A1287"] = "Size"
+    ws["J1287"] = "Solid Top"
+    ws["A1288"] = "42x66"
+    ws["J1288"] = 600.0
+    ws["A1294"] = "Iron Forge Table without Live Edge"
+    ws["J1294"] = "Walnut"
+    ws["A1295"] = "Size"
+    ws["J1295"] = "Solid Top"
+    ws["A1296"] = "42x66"
+    ws["J1296"] = 500.0
     return wb
 
 
@@ -173,8 +187,8 @@ def test_synthetic_workbook_paths_and_notes():
     acadia = next(r for r in wide if r.cells[0] == "Side Chair" and r.cells[1] == retail_from_raw(_W1, 2.7))
     assert len([c for c in acadia.cells[1:7] if c.startswith("$")]) == 6
     assert "Included" in acadia.cells
-    assert retail_from_raw(32, 2.7) in acadia.cells
-    assert retail_from_raw(98, 2.7) in acadia.cells
+    assert retail_from_raw(29.0, 2.7) in acadia.cells
+    assert retail_from_raw(96.0, 2.7) in acadia.cells
 
     albany = next(
         r for r in wide if r.cells[0] == "Side Chair" and r.cells[1] == retail_from_raw(150.0, 2.7)
@@ -212,8 +226,8 @@ def test_synthetic_workbook_paths_and_notes():
 
     blob = "\n".join(" ".join(r.cells) for r in res.rows)
     assert '13" x 96" Bench' not in blob or retail_from_raw(450.0, 2.7) not in blob
-    assert any("$27" in " ".join(r.cells) for r in res.rows)
-    assert any("$49 per leaf" in " ".join(r.cells) for r in res.rows)
+    assert any(retail_from_raw(11.0, 2.7) in " ".join(r.cells) for r in res.rows)
+    assert any(retail_from_raw(17.0, 2.7) + " per leaf" in " ".join(r.cells) for r in res.rows)
     assert any("$122 per leaf" in " ".join(r.cells) for r in res.rows)
     assert any("add 22%" in " ".join(r.cells) for r in res.rows)
     assert "Deduct 10% for Rustic Species" in blob
@@ -224,3 +238,48 @@ def test_synthetic_workbook_paths_and_notes():
 
     assert len(held_items_for_pr()) == 6
     assert not any(r.kind == RowKind.TABLE_HEADER for r in res.rows)
+
+    in_wle = False
+    wle_header: list[str] = []
+    for pr in res.rows:
+        if pr.kind == RowKind.SUBHEAD and pr.cells[0] == "Iron Forge Table without Live Edge":
+            in_wle = True
+            continue
+        if in_wle and pr.kind == RowKind.SUBHEAD:
+            break
+        if in_wle and pr.kind == RowKind.WIDE and not any(c.startswith("$") for c in pr.cells):
+            wle_header = pr.cells
+        if in_wle and pr.kind == RowKind.WIDE and pr.cells[0] == "42x66" and wle_header:
+            wi = next(i for i, h in enumerate(wle_header) if "Walnut" in h)
+            assert pr.cells[wi] == retail_from_raw(500.0, 2.7)
+            break
+
+
+def test_iron_forge_non_held_walnut_survives_empty_group_filter():
+    """Only Live Edge J1288–J1291 is held; without-live-edge walnut must not be dropped."""
+    rows: list[list] = [[None] * 11 for _ in range(1300)]
+    rows[1295][0] = "42x66"
+    rows[1295][9] = 510.0
+    hidden: set[int] = set()
+    assert not _drop_empty_wood_group(
+        "Iron Forge Table without Live Edge",
+        "Walnut",
+        rows,
+        hidden,
+        1295,
+        1296,
+        9,
+        9,
+    )
+    rows[1287][0] = "42x66"
+    rows[1287][9] = 520.0
+    assert _drop_empty_wood_group(
+        "Iron Forge Table-Live Edge",
+        "Walnut",
+        rows,
+        hidden,
+        1287,
+        1288,
+        9,
+        9,
+    )

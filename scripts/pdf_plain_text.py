@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 
-_CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\ufffd]")
+_CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f\ufffd]")
 _X000D_RE = re.compile(r"_x000D_", re.I)
 _LITERAL_BR_RE = re.compile(r"<br\s*/?>", re.I)
 _STRIP_TAG_RE = re.compile(r"</?\s*br\s*/?\s*>", re.I)

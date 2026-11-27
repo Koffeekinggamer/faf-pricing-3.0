@@ -220,8 +220,6 @@ def _drop_empty_wood_group(
         x in l for x in ("qswo", "hickory", "white oak")
     ):
         return True
-    if "iron forge" in t and "walnut" in l:
-        return True
     for i in range(data_start_i, data_end_i):
         r1 = i + 1
         if r1 in hidden:
