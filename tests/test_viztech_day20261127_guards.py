@@ -232,11 +232,11 @@ def test_kkt_options_thickness_two_tone_and_no_digital_prompt():
         ['For 1¼" tops add 15%'],
         ['For 1 ½" and 1 ¾" tops add 30%'],
         ["FOR TWO TONE"],
-        ["2-tone Stain : Add $60.00"],
-        ["2-tone Paint and Stain : Add $70.00"],
-        ["2-tone Paint : Add $80.00"],
-        ["For solid paint color add $60.00 to finished price"],
-        ["2-tone stain for benches add $30"],
+        ["2-tone Stain : Add $22.00"],
+        ["2-tone Paint and Stain : Add $27.00"],
+        ["2-tone Paint : Add $30.00"],
+        ["For solid paint color add $22.00 to finished price"],
+        ["2-tone stain for benches add $11"],
         ["Prices effective January 1, 2019"],
     ]
     out = _process_sheet("Options", rows, multiplier=2.7, spots=[])
@@ -247,10 +247,10 @@ def test_kkt_options_thickness_two_tone_and_no_digital_prompt():
     assert "Prices effective" not in blob
     assert any('1¼" tops add 15%' in t for t in texts)
     assert any("1 ¾" in t and "30%" in t for t in texts)
-    assert any("2-tone Stain : Add $162" in t for t in texts)
-    assert any("2-tone Paint and Stain : Add $189" in t for t in texts)
-    assert any("2-tone Paint : Add $216" in t for t in texts)
-    assert any("benches add $81" in t for t in texts)
+    assert any(f"2-tone Stain : Add {_r(22.0)}" in t for t in texts)
+    assert any(f"2-tone Paint and Stain : Add {_r(27.0)}" in t for t in texts)
+    assert any(f"2-tone Paint : Add {_r(30.0)}" in t for t in texts)
+    assert any(f"benches add {_r(11.0)}" in t for t in texts)
 
 
 def test_ln_estimated_finished_band_not_unfinished():
@@ -412,6 +412,12 @@ def test_comfort_fabric_leather_grades_kept():
 
 
 def test_comfort_dutch_boy_and_yearish_grades():
+    dutch_opts = (51.0, 21.0, 71.0, 91.0)
+    dutch_grades = (631.0, 632.0, 633.0, 634.0, 635.0)
+    encore_tilt = 47.0
+    encore_grades = (161.0, 162.0, 163.0, 164.0, 165.0)
+    lazy_tilt, lazy_usb, lazy_swivel = 47.0, 21.0, 32.0
+    lazy_grades = (171.0, 172.0, 173.0, 174.0, 175.0)
     rows = [
         [
             None,
@@ -430,18 +436,14 @@ def test_comfort_dutch_boy_and_yearish_grades():
         ],
         [
             '37" Dutch Boy Wallhugger Recliner',
-            125.0,
+            dutch_opts[0],
             "N/A",
-            25.0,
-            75.0,
-            95.0,
+            dutch_opts[1],
+            dutch_opts[2],
+            dutch_opts[3],
             None,
             None,
-            631.0,
-            632.0,
-            633.0,
-            634.0,
-            635.0,
+            *dutch_grades,
         ],
         [
             '52" E-Z Sleeper Jackknife w/Drawer',
@@ -476,32 +478,24 @@ def test_comfort_dutch_boy_and_yearish_grades():
         [
             '83" Encore Zerowall Sofa WITHOUT Folddown',
             "Standard",
-            255.0,
+            encore_tilt,
             "N/A",
             None,
             None,
             None,
             "Standard",
-            161.0,
-            162.0,
-            163.0,
-            164.0,
-            165.0,
+            *encore_grades,
         ],
         [
             '62" Lazy Lounger Wallhugger Workmate',
-            255.0,
+            lazy_tilt,
             "N/A",
-            55.0,
+            lazy_usb,
             None,
             "N/A",
             "Standard",
-            85.0,
-            171.0,
-            172.0,
-            173.0,
-            174.0,
-            175.0,
+            lazy_swivel,
+            *lazy_grades,
         ],
     ]
     out = _process_sheet("Wholesale", rows, multiplier=2.7, spots=[])
@@ -510,21 +504,21 @@ def test_comfort_dutch_boy_and_yearish_grades():
     }
     dutch = by_name['37" Dutch Boy Wallhugger Recliner']
     assert _dollar_tokens(dutch) == [
-        _r(125),
-        _r(25),
-        _r(75),
-        _r(95),
-        *[_r(v) for v in (631, 632, 633, 634, 635)],
+        *[_r(v) for v in dutch_opts],
+        *[_r(v) for v in dutch_grades],
     ]
     ez = by_name['52" E-Z Sleeper Jackknife w/Drawer']
     assert _dollar_tokens(ez) == [_r(v) for v in (571, 572, 573, 574, 575)]
     diner = by_name["Dutch Swivel Diner"]
     assert _dollar_tokens(diner) == [_r(v) for v in (341, 342, 343, 344, 345)]
     encore = [c for k, c in by_name.items() if "Encore" in k][0]
-    assert _r(163) in encore
+    assert _r(encore_tilt) in encore
+    assert _r(encore_grades[2]) in encore
     _assert_no_bare_yearish_prices(encore)
     lazy = [c for k, c in by_name.items() if "Lazy Lounger" in k][0]
-    assert _r(173) in lazy
+    assert _r(lazy_tilt) in lazy
+    assert _r(lazy_swivel) in lazy
+    assert _r(lazy_grades[2]) in lazy
     _assert_no_bare_yearish_prices(lazy)
 
 
