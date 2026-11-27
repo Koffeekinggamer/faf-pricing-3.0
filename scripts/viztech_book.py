@@ -827,9 +827,10 @@ def _finished_price_cols(header_rows: list[list], width: int) -> set[int]:
                 not right_woods
                 or left_woods == right_woods
                 or (len(left_pf) >= 3 and right_pf)
+                or (len(left_pf) <= 2 and right_pf)
             ):
                 pair_finished = left_pf
-            # else keep both panels (Greenville different species groups)
+            # else keep both panels (≥3 distinct finished woods on left + new species)
         sorted_pf = sorted(pair_finished)
         for a, b in zip(sorted_pf, sorted_pf[1:]):
             if b - a > 2:
@@ -977,12 +978,17 @@ def _detect_finished_add_layout(
     Family sections often use a bare ``Item # | ALAMO`` title without repeating
     the wood / Finished ADD headers — walk further up the sheet for those labels.
     """
+    family_row = _nearest_family_header_row(rows, start)
+    if _family_is_finished_only(rows, family_row):
+        return None
     header_block, width = _header_block_near(rows, start)
+    item_cols = _item_code_cols(header_block, width)
     # Also scan rows above the local header for the last Finished ADD band.
     scan_rows = list(header_block)
-    for back in range(1, min(start, 80) + 1):
+    scan_floor = family_row if family_row is not None else 0
+    for back in range(1, min(start - scan_floor, 80) + 1):
         idx = start - back
-        if idx < 0:
+        if idx < scan_floor:
             break
         row = rows[idx]
         joined = " ".join(
@@ -1048,6 +1054,7 @@ def _detect_finished_add_layout(
         u_left = sorted(j for j in unfinished_cols if j < add_col)
         if u_left and (not woods or min(u_left) < min(woods)):
             woods = sorted(set(woods) | set(u_left))
+    woods = sorted(j for j in woods if j not in item_cols)
     if len(woods) < 2:
         return None
     # Confirm ADD values and unfinished bases on nearby rows
@@ -1236,6 +1243,16 @@ _HEADER_HINT_RE = re.compile(
 
 def _row_looks_like_column_header(row: list) -> bool:
     """True for grid header rows, not instructional prose that mentions 'finished'."""
+    joined = " ".join(
+        c.strip() for c in row if isinstance(c, str) and c.strip()
+    )
+    if re.search(r"\btop\s*size\b", joined, re.I) and not any(
+        isinstance(c, str)
+        and re.search(r"^item\s*(?:#|number|no\.?)$", c.strip(), re.I)
+        for c in row
+    ):
+        # L&N size-band labels (UNFINISHED / ESTIMATED FINISHED PRICE) — not the wood grid.
+        return False
     hits = 0
     for c in row:
         if not isinstance(c, str):
@@ -1274,18 +1291,107 @@ def _row_has_fin_unf_pair_labels(row: list) -> bool:
     return has_fin and has_unf
 
 
+def _nearest_family_header_row(rows: list[list], start: int) -> int | None:
+    """Row index of the nearest ``Item #`` family title above ``start``."""
+    for back in range(1, min(start, 120) + 1):
+        idx = start - back
+        row = rows[idx]
+        if not row:
+            continue
+        if isinstance(row[0], str) and re.fullmatch(
+            r"item\s*(?:#|number|no\.?)", row[0].strip(), re.I
+        ):
+            return idx
+    return None
+
+
+def _family_is_finished_only(rows: list[list], family_row: int | None) -> bool:
+    """KKT families priced finished-only (Walnut is a wood column, not Finished ADD)."""
+    if family_row is None:
+        return False
+    for j in range(family_row, min(family_row + 4, len(rows))):
+        joined = " ".join(
+            c.strip() for c in rows[j] if isinstance(c, str) and c.strip()
+        ).lower()
+        if "only available in finished" in joined:
+            return True
+        if "not available unfinished" in joined:
+            return True
+        texts = [
+            c.strip().lower()
+            for c in rows[j]
+            if isinstance(c, str) and c.strip()
+        ]
+        fin = sum(
+            1
+            for t in texts
+            if re.fullmatch(r"fin\.?", t)
+            or (
+                re.search(r"\bfinished\b", t)
+                and not re.search(r"finished\s*add\b", t)
+            )
+        )
+        unf = sum(
+            1
+            for t in texts
+            if re.fullmatch(r"unf(?:in)?\.?", t)
+            or (
+                re.search(r"\bunfinished\b", t) and not re.search(r"\bfinished\b", t)
+            )
+        )
+        if fin >= 3 and unf == 0:
+            return True
+    return False
+
+
+def _finished_only_wood_cols(rows: list[list], start: int) -> set[int]:
+    """Finished-only KKT chair rows: first contiguous wood wholesale band (skip twin)."""
+    family_row = _nearest_family_header_row(rows, start)
+    if not _family_is_finished_only(rows, family_row):
+        return set()
+    row = rows[start]
+    _, label_j = _row_item_label(row)
+    min_j = (label_j + 1) if label_j >= 0 else 1
+    nums = sorted(
+        j
+        for j in range(min_j, len(row))
+        if _is_wholesale_price(row[j], allow_yearish=True)
+    )
+    if len(nums) < 2:
+        return set()
+    run: list[int] = [nums[0]]
+    for j in nums[1:]:
+        if j <= run[-1] + 2:
+            run.append(j)
+        else:
+            break
+    return set(run)
+
+
 def _header_block_near(rows: list[list], start: int) -> tuple[list[list], int]:
     header_start = None
     # Prefer a real header above the current row (skip the current data line).
-    for back in range(1, min(start, 40) + 1):
+    header_candidates: list[int] = []
+    for back in range(1, min(start, 60) + 1):
         idx = start - back
         row = rows[idx] if idx < len(rows) else []
         if _row_looks_like_column_header(row):
-            header_start = idx
-            break
+            header_candidates.append(idx)
+    if header_candidates:
+        for idx in header_candidates:
+            row = rows[idx]
+            if any(
+                isinstance(c, str)
+                and re.search(r"^item\s*(?:#|number|no\.?)$", c.strip(), re.I)
+                for c in row
+            ):
+                header_start = idx
+                break
+        if header_start is None:
+            header_start = header_candidates[0]
     if header_start is None:
         # Fall back: UNFINISHED / FINISH band rows (Heritage Occasionals)
-        for back in range(1, min(start, 40) + 1):
+        for back in range(1, min(start, 60) + 1):
             idx = start - back
             row = rows[idx] if idx < len(rows) else []
             joined = " ".join(
@@ -1299,7 +1405,11 @@ def _header_block_near(rows: list[list], start: int) -> tuple[list[list], int]:
     # Include rows above the Item/Description header so section labels like
     # L&N "UNFINISHED" / "ESTIMATED FINISHED PRICE" and KKT dual Description
     # panels participate in column detection.
+    family_row = _nearest_family_header_row(rows, start)
+    finished_only = _family_is_finished_only(rows, family_row)
     block_start = max(0, header_start - 4)
+    if finished_only and family_row is not None:
+        block_start = max(block_start, family_row)
     header_block = rows[block_start : header_start + 12]
     # Raleigh benches reprint Item/wood headers without the Fin|Unf sub-row —
     # pull the nearest Fin|Unf pair labels from further above into the block.
@@ -1308,10 +1418,28 @@ def _header_block_near(rows: list[list], start: int) -> tuple[list[list], int]:
             idx = header_start - back
             if idx < 0:
                 break
+            if finished_only and family_row is not None and idx < family_row:
+                break
             if _row_has_fin_unf_pair_labels(rows[idx]):
                 header_block = [rows[idx]] + list(header_block)
                 block_start = min(block_start, idx)
                 break
+    if finished_only and family_row is not None and family_row > block_start:
+        header_block = rows[family_row : header_start + 12]
+        block_start = family_row
+    block_end = min(len(rows), header_start + 12)
+    for j in range(header_start + 1, min(len(rows), header_start + 16)):
+        if (
+            j < len(rows)
+            and rows[j]
+            and isinstance(rows[j][0], str)
+            and re.fullmatch(
+                r"item\s*(?:#|number|no\.?)", rows[j][0].strip(), re.I
+            )
+        ):
+            block_end = j
+            break
+    header_block = rows[block_start:block_end]
     width = max((len(r) for r in rows[block_start : header_start + 40]), default=0)
     return header_block, width
 
@@ -1867,12 +1995,16 @@ def _infer_price_cols(rows: list[list], start: int) -> set[int]:
     cols: set[int] = set()
     # Prefer a nearby header row above the current line when present
     header_block, width = _header_block_near(rows, start)
+    item_cols = _item_code_cols(header_block, width)
+    excluded_early = _excluded_price_header_cols(header_block, width)
+    only_finished = _finished_only_wood_cols(rows, start)
+    if only_finished and _labeled_cols_have_prices(rows, start, only_finished):
+        return only_finished - item_cols - excluded_early
     width = max(
         width,
         max((len(r) for r in rows[: start + 1]), default=0),
         max((len(r) for r in rows[max(0, start - 60) : start + 1]), default=0),
     )
-    item_cols = _item_code_cols(header_block, width)
     excluded = _excluded_price_header_cols(header_block, width) | _addon_cols_above(
         rows, start, width
     )
@@ -2189,7 +2321,18 @@ def _process_sheet(
                 out.append(ProcessedRow(RowKind.SUBHEAD, [prose]))
                 i += 1
                 continue
+        if (
+            row
+            and isinstance(row[0], str)
+            and re.fullmatch(r"item\s*(?:#|number|no\.?)", row[0].strip(), re.I)
+        ):
+            if _family_is_finished_only(rows, i):
+                last_finished_add = None
         finished_add = _detect_finished_add_layout(rows, i) or last_finished_add
+        if finished_add and _family_is_finished_only(
+            rows, _nearest_family_header_row(rows, i)
+        ):
+            finished_add = None
         if finished_add and any(_is_wholesale_price(c) for c in row):
             cells = _transform_finished_add_row(
                 row, finished_add, multiplier, spots=spots, item_hint=item_hint
@@ -2226,10 +2369,19 @@ def _process_sheet(
         price_cols = _infer_price_cols(rows, i)
         row_width = max(len(row), max((len(r) for r in rows[max(0, i - 60) : i + 1]), default=0))
         addon_skip = _addon_cols_above(rows, i, row_width)
+        excluded_data = (
+            _excluded_price_header_cols(header_block, row_width) | addon_skip
+        )
         if price_cols:
-            use_cols = [j for j in sorted(price_cols) if j not in addon_skip]
+            use_cols = [
+                j for j in sorted(price_cols) if j not in addon_skip and j not in excluded_data
+            ]
         else:
-            use_cols = [j for j in range(len(row)) if j not in addon_skip]
+            use_cols = [
+                j
+                for j in range(len(row))
+                if j not in addon_skip and j not in excluded_data
+            ]
         cells = _transform_row_prices(
             row, multiplier, use_cols, spots=spots, item_hint=item_hint
         )
@@ -2240,7 +2392,7 @@ def _process_sheet(
             nums = [
                 j
                 for j, c in enumerate(row)
-                if _is_wholesale_price(c) and j not in addon_skip
+                if _is_wholesale_price(c) and j not in excluded_data
             ]
             add_idxs = [
                 j
@@ -2264,7 +2416,7 @@ def _process_sheet(
             nums = [
                 j
                 for j, c in enumerate(row)
-                if _is_wholesale_price(c) and j not in addon_skip
+                if _is_wholesale_price(c) and j not in excluded_data
             ]
             if nums:
                 cells = _transform_row_prices(row, multiplier, nums, spots=spots, item_hint=label)
