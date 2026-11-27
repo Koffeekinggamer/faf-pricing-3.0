@@ -180,7 +180,8 @@ def sanitize_retail_text(text: str, multiplier: float, *, allow_percent: bool = 
         t = _scrub_approx(t)
         assert_no_approx(t)
         return t
-    if FOB_RE.search(text):
+    # Freight "FOB destination" prose — not Freemont item codes like FOB-3636-O.
+    if FOB_RE.search(text) and not re.match(r"^FOB[-_\d]", text.strip(), re.I):
         return ""
     t = WHOLESALE_RE.sub("", text)
     t = PREFERRED_RE.sub("", t)
@@ -202,6 +203,7 @@ def forbidden_phrases(*parts: str) -> list[str]:
             bad.append(p)
         if "preferred dealer" in s:
             bad.append(p)
-        if FOB_RE.search(s):
+        # Freight FOB prose only — keep Freemont item codes like FOB-3636-O.
+        if FOB_RE.search(s) and not re.match(r"^fob[-_\d]", s.strip(), re.I):
             bad.append(p)
     return bad

@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from scripts.dealer_book import RowKind
-from scripts.pricing_lib import retail_whole_dollar
+import re
 from pathlib import Path
 
+from scripts.dealer_book import RowKind
+from scripts.pricing_lib import retail_whole_dollar
 from scripts.viztech_book import (
     _detect_finished_add_layout,
     _drop_row,
@@ -16,6 +17,17 @@ from scripts.viztech_book import (
     _transform_finished_add_row,
     section_title_from_path,
 )
+
+
+def _dollar_tokens(cells: list[str]) -> list[str]:
+    return [c for c in cells if isinstance(c, str) and c.startswith("$")]
+
+
+def _assert_no_bare_yearish_prices(cells: list[str]) -> None:
+    """Price rows must not leak bare 4-digit wholesale amounts (2015–2035)."""
+    joined = " ".join(cells)
+    for m in re.finditer(r"(?<![\d,$])(20[1-3]\d)(?![\d])", joined):
+        assert False, f"bare yearish wholesale leaked: {m.group(0)} in {cells}"
 
 
 def test_kkt_finished_add_composes_unfinished_plus_add():
@@ -40,6 +52,32 @@ def test_kkt_finished_add_composes_unfinished_plus_add():
     assert wide["1012"][1] == "Arm Chair"
 
 
+def test_kkt_alamo_bare_family_header_composes_add():
+    """ALAMO sections omit wood/ADD labels — persist Finished ADD from above."""
+    rows = [
+        ["Item #", None, "Oak", "Brown Maple", "Cherry", "QSWO", "Finished\nADD"],
+        [None, None, "Unfinished", "Unfinished", "Unfinished", "Unfinished", "Add"],
+        [1010, "Side Chair", 124, 138, 147, 170, 36],
+        ["Item #", "ALAMO"],
+        [1014, "Arm Chair", 133, 155, 166, 179, 36],
+    ]
+    out = _process_sheet("Chairs", rows, multiplier=2.7, spots=[])
+    wide = {c[0]: c for c in (r.cells for r in out if r.kind == RowKind.WIDE)}
+    assert _dollar_tokens(wide["1014"]) == ["$457", "$516", "$546", "$581"]
+    _assert_no_bare_yearish_prices(wide["1014"])
+
+
+def test_kkt_lexi_blank_first_wood_shows_remaining():
+    rows = [
+        ["Item #", "LEXI", None, "Oak", "Maple", "Cherry", "Finished\nADD"],
+        [None, None, None, "Unfinished", "Unfinished", "Unfinished", "Add"],
+        [2044, "Side", None, 126, 134, 172, 36],
+    ]
+    out = _process_sheet("Chairs", rows, multiplier=2.7, spots=[])
+    wide = {c[0]: c for c in (r.cells for r in out if r.kind == RowKind.WIDE)}
+    assert _dollar_tokens(wide["2044"]) == ["$438", "$459", "$562"]
+
+
 def test_kkt_fin_unf_pairs_drop_mirrored_reprint():
     headers = [
         ["Item Number", "Description", "Oak", None, "Maple", None, "Cherry", None, "QSWO", None, "Description", "Oak"],
@@ -48,6 +86,141 @@ def test_kkt_fin_unf_pairs_drop_mirrored_reprint():
     fin = _finished_price_cols(headers, 14)
     assert fin == {2, 4, 6, 8}
     assert 11 not in fin
+
+
+def test_kkt_greenville_keeps_both_dual_panels():
+    """Different species groups on left/right — keep all four finished woods."""
+    headers = [
+        [
+            "Item Number",
+            "Description",
+            "Rustic Maple, Rustic White Oak",
+            None,
+            "Brown Maple Wormy Maple",
+            None,
+            "Description",
+            "Elm/Cherry/Hickory/Hard Maple",
+            None,
+            "R. Cherry/Sap Cherry/R. QSWO",
+            None,
+        ],
+        [
+            None,
+            None,
+            "Finished",
+            "Unfinished",
+            "Finished",
+            "Unfinished",
+            None,
+            "Finished",
+            "Unfinished",
+            "Finished",
+            "Unfinished",
+        ],
+    ]
+    fin = _finished_price_cols(headers, 12)
+    assert fin == {2, 4, 7, 9}
+    rows = headers + [
+        ["1803-4266", "Solid Top", 1409, 1152, 1303, 1065, "Solid Top", 1409, 1152, 1303, 1065],
+    ]
+    out = _process_sheet("Greenville", rows, multiplier=2.7, spots=[])
+    wide = {c[0]: c for c in (r.cells for r in out if r.kind == RowKind.WIDE)}
+    assert _dollar_tokens(wide["1803-4266"]) == ["$3,805", "$3,519", "$3,805", "$3,519"]
+
+
+def test_kkt_raleigh_full_left_panel_drops_reprint():
+    headers = [
+        [
+            "Item Number",
+            "Description",
+            "R. Cherry Sap Cherry Oak",
+            None,
+            "R. Hickory Brown Maple",
+            None,
+            "Elm Cherry Hard Maple",
+            None,
+            "QWSO",
+            None,
+            "Description",
+            "Oak",
+            None,
+            "Elm/Cherry/Hickory",
+            None,
+            "R. Cherry group",
+            None,
+            "QSWO",
+        ],
+        [
+            None,
+            None,
+            "Finished",
+            "Unfinished",
+            "Finished",
+            "Unfinished",
+            "Finished",
+            "Unfinished",
+            "Finished",
+            "Unfinished",
+            None,
+            "Finished",
+            "Unfinished",
+            "Finished",
+            "Unfinished",
+            "Finished",
+            "Unfinished",
+            "Finished",
+            "Unfinished",
+        ],
+    ]
+    fin = _finished_price_cols(headers, 20)
+    assert fin == {2, 4, 6, 8}
+    assert 11 not in fin
+
+
+def test_kkt_quick_ship_finished_not_unfinished():
+    rows = [
+        ["Description", "Elm\nBrown Maple", None, "Rustic Cherry", None, "Rustic Hickory"],
+        [None, "Finished", "Unfinished", "Finished", "Unfinished", "Finished", "Unfinished", None, "Finished", "Unfinished", "Finished", "Unfinished"],
+        ["Oregon Arm Chair", 187, 146, 187, 146, None, None, None, 187, 146, 187, 146],
+        ["Galveston G-2 Side Chair", 179, 138, None, None, None, None, None, 179, 138],
+        ["Galveston G-2 Arm Chair", 204, 163, None, None, None, None, None, 204, 163],
+        ["2 Tone", None, 12],
+        ["Paint", None, 12],
+    ]
+    out = _process_sheet("Quick Ship", rows, multiplier=2.7, spots=[])
+    wide = {c[0]: c for c in (r.cells for r in out if r.kind == RowKind.WIDE)}
+    assert _dollar_tokens(wide["Oregon Arm Chair"]) == ["$505", "$505"]
+    assert _dollar_tokens(wide["Galveston G-2 Side Chair"]) == ["$484"]
+    assert _dollar_tokens(wide["Galveston G-2 Arm Chair"]) == ["$551"]
+
+
+def test_kkt_options_thickness_two_tone_and_no_digital_prompt():
+    rows = [
+        [None, None, None, None, None, None, None, None, "TO ACCESS DIGITAL FILES, GO TO:"],
+        [None, None, None, None, None, None, None, None, "www.example.com : PASSWORD: secret"],
+        ["TOPS"],
+        ['For 1¼" tops add 15%'],
+        ['For 1 ½" and 1 ¾" tops add 30%'],
+        ["FOR TWO TONE"],
+        ["2-tone Stain : Add $60.00"],
+        ["2-tone Paint and Stain : Add $70.00"],
+        ["2-tone Paint : Add $80.00"],
+        ["For solid paint color add $60.00 to finished price"],
+        ["2-tone stain for benches add $30"],
+        ["Prices effective January 1, 2019"],
+    ]
+    out = _process_sheet("Options", rows, multiplier=2.7, spots=[])
+    texts = [" ".join(r.cells) for r in out]
+    blob = "\n".join(texts)
+    assert "DIGITAL FILES" not in blob.upper()
+    assert "PASSWORD" not in blob.upper()
+    assert "Prices effective" not in blob
+    assert any('1¼" tops add 15%' in t for t in texts)
+    assert any("1 ¾" in t and "30%" in t for t in texts)
+    assert any("2-tone Stain : Add $162" in t for t in texts)
+    assert any("2-tone Paint and Stain : Add $189" in t for t in texts)
+    assert any("2-tone Paint : Add $216" in t for t in texts)
+    assert any("benches add $81" in t for t in texts)
 
 
 def test_ln_estimated_finished_band_not_unfinished():
@@ -83,6 +256,55 @@ def test_ln_estimated_finished_band_not_unfinished():
     wide = [r.cells for r in out if r.kind == RowKind.WIDE][0]
     assert wide[0] == "AD7284"
     assert "$6,100" in wide and "$5,619" not in wide  # finished Oak, not unfinished
+    assert "$481" not in wide  # finish-per-piece 178×2.7
+
+
+def test_ln_estimated_finish_price_alias_excluded():
+    """Bookcase sheets label the helper column 'estimated finish price'."""
+    headers = [
+        [None, None, None, "UNFINISHED", None, None, None, None, "ESTIMATED FINISHED PRICE"],
+        [
+            "Item #",
+            "Description",
+            "Adj. Shelves",
+            "Oak",
+            "Cherry",
+            "Walnut",
+            "R. Cherry Br. Maple",
+            "R. Walnut",
+            "Oak",
+            "Cherry",
+            "Walnut",
+            "R. Cherry Br. Maple",
+            "R. Walnut",
+            "estimated finish price",
+        ],
+    ]
+    fin = _finished_price_cols(headers, 14)
+    assert fin == {8, 9, 10, 11, 12}
+    assert 13 not in fin
+    rows = headers + [
+        ["AD3660-O", "Open Bookcase", 3, 691, 899, 1348, 781, 1168, 795, 1002.3, 1451.45, 884.83, 1271.79, 104],
+        ["FOB-3636-O", "Bookcase", None, 542, 705, 759, 613, 678, 605, 768, 822, 676, 741],
+        ["AFD24", "File Desk", "74x24x31", 1500, 2000, 2100, 1800, 1900, 2018, 2574, 2759, 2259, 2481, 166],
+    ]
+    out = _process_sheet("Wholesale", rows, multiplier=2.7, spots=[])
+    wide = {c[0]: c for c in (r.cells for r in out if r.kind == RowKind.WIDE)}
+    assert _dollar_tokens(wide["AD3660-O"]) == [
+        "$2,147",
+        "$2,707",
+        "$3,919",
+        "$2,390",
+        "$3,434",
+    ]
+    assert "$9" not in wide["AD3660-O"]  # adj shelves
+    assert "$281" not in wide["AD3660-O"]  # finish-per-piece
+    assert wide["FOB-3636-O"][0] == "FOB-3636-O"
+    assert len(_dollar_tokens(wide["FOB-3636-O"])) == 5
+    assert _dollar_tokens(wide["FOB-3636-O"])[0] == "$1,634"  # 605×2.7 ceil
+    assert _dollar_tokens(wide["AFD24"])[0] == "$5,449"  # 2018×2.7 ceil, not bare year
+    assert len(_dollar_tokens(wide["AFD24"])) == 5
+    _assert_no_bare_yearish_prices(wide["AFD24"])
 
 
 def test_la_patio_poly_columns_all_finished():
@@ -98,6 +320,25 @@ def test_la_patio_poly_columns_all_finished():
     cells = [r.cells for r in out if r.kind == RowKind.WIDE][0]
     assert cells[0] == "LACT36R-D"
     assert cells[-3:] == ["$1,364", "$1,445", "$1,499"]
+
+
+def test_la_patio_wood_grain_spaced_and_yearish_and_phone_holder():
+    headers = [
+        ["JADE TABLES", None, None, "STANDARD \nPOLY", "2-TONE\nstd/wood grain", "WOOD GRAIN \nPOLY"],
+    ]
+    assert _finished_price_cols(headers, 6) == {3, 4, 5}
+    rows = headers + [
+        ["LAJA4677F-B", '46" x 77" Jade Table w/Fire Ring', "bar", 1870.0, 1970.0, 2020.0],
+        ["LACH555", "Screw-On Cup/Phone Holder", "", 25.0, 30.0, 30.0],
+        ["Zach Chair is discontinued for 2027"],
+    ]
+    out = _process_sheet("Wholesale", rows, multiplier=2.7, spots=[])
+    wide = {c[0]: c for c in (r.cells for r in out if r.kind == RowKind.WIDE)}
+    assert _dollar_tokens(wide["LAJA4677F-B"]) == ["$5,049", "$5,319", "$5,454"]
+    _assert_no_bare_yearish_prices(wide["LAJA4677F-B"])
+    assert wide["LACH555"][0] == "LACH555"
+    assert _dollar_tokens(wide["LACH555"]) == ["$68", "$81", "$81"]
+    assert not any("Zach" in " ".join(r.cells) for r in out)
 
 
 def test_comfort_fabric_leather_grades_kept():
@@ -140,6 +381,129 @@ def test_comfort_fabric_leather_grades_kept():
     assert any("tacks add $257" in c for c in wide)
 
 
+def test_comfort_dutch_boy_and_yearish_grades():
+    rows = [
+        [
+            None,
+            "Electric Controls",
+            None,
+            None,
+            "Swivel",
+            "Lay Flat",
+            None,
+            None,
+            "Standard\nFabric",
+            "Premium \nFabric",
+            "Ultra \nLeather",
+            "Italian Cowhide Leather",
+            "Heartland\nFabric",
+        ],
+        [
+            '37" Dutch Boy Wallhugger Recliner',
+            125.0,
+            "N/A",
+            25.0,
+            75.0,
+            95.0,
+            None,
+            None,
+            635.0,
+            675.0,
+            865.0,
+            1415.0,
+            865.0,
+        ],
+        [
+            '52" E-Z Sleeper Jackknife w/Drawer',
+            "N/A",
+            "N/A",
+            "N/A",
+            None,
+            None,
+            None,
+            None,
+            1175.0,
+            1215.0,
+            1405.0,
+            1945.0,
+            1405.0,
+        ],
+        [
+            "Dutch Swivel Diner",
+            "N/A",
+            "N/A",
+            "N/A",
+            None,
+            None,
+            None,
+            None,
+            345.0,
+            345.0,
+            345.0,
+            395.0,
+            345.0,
+        ],
+        [
+            '83" Encore Zerowall Sofa WITHOUT Folddown',
+            "Standard",
+            255.0,
+            "N/A",
+            None,
+            None,
+            None,
+            "Standard",
+            1625.0,
+            1685.0,
+            2025.0,
+            3145.0,
+            2025.0,
+        ],
+        [
+            '62" Lazy Lounger Wallhugger Workmate',
+            255.0,
+            "N/A",
+            55.0,
+            None,
+            "N/A",
+            "Standard",
+            85.0,
+            1635.0,
+            1695.0,
+            2035.0,
+            3565.0,
+            2035.0,
+        ],
+    ]
+    out = _process_sheet("Wholesale", rows, multiplier=2.7, spots=[])
+    by_name = {
+        r.cells[0]: r.cells for r in out if r.kind == RowKind.WIDE
+    }
+    dutch = by_name['37" Dutch Boy Wallhugger Recliner']
+    assert _dollar_tokens(dutch)[:5] == [
+        "$1,715",
+        "$1,823",
+        "$2,336",
+        "$3,821",
+        "$2,336",
+    ]
+    ez = by_name['52" E-Z Sleeper Jackknife w/Drawer']
+    assert _dollar_tokens(ez) == [
+        "$3,173",
+        "$3,281",
+        "$3,794",
+        "$5,252",
+        "$3,794",
+    ]
+    diner = by_name["Dutch Swivel Diner"]
+    assert _dollar_tokens(diner) == ["$932", "$932", "$932", "$1,067", "$932"]
+    encore = [c for k, c in by_name.items() if "Encore" in k][0]
+    assert "$5,468" in encore
+    _assert_no_bare_yearish_prices(encore)
+    lazy = [c for k, c in by_name.items() if "Lazy Lounger" in k][0]
+    assert "$5,495" in lazy
+    _assert_no_bare_yearish_prices(lazy)
+
+
 def test_chimes_part_and_size_kept():
     rows = [
         ["Part #", "Description", "Approx\nSize", "Qty.", "Price"],
@@ -150,6 +514,20 @@ def test_chimes_part_and_size_kept():
     wide = {c[0]: c for c in (r.cells for r in out if r.kind == RowKind.WIDE)}
     assert wide["904"] == ["904", "Sonic Sound Waves - Jade", '56"', "$403"]
     assert wide["841"][-1] == f"${retail_whole_dollar(232.0, 2.7):,}"
+
+
+def test_chimes_phone_sidebar_keeps_820_and_818():
+    rows = [
+        ["Part #", "Description", "Approx\nSize", "Qty.", "Price", None, "PHONE"],
+        [820.0, "Sparkling Brooke - Tex Black", '30"', None, 43.0, None, "PHONE"],
+        [818.0, "Zephyr Valley - Tex Black", '37"', None, 49.0, None, "FAX"],
+    ]
+    assert not _drop_row(rows[1], "820 Sparkling Brooke PHONE")
+    assert not _drop_row(rows[2], "818 Zephyr Valley FAX")
+    out = _process_sheet("Order Form", rows, multiplier=2.7, spots=[])
+    wide = {c[0]: c for c in (r.cells for r in out if r.kind == RowKind.WIDE)}
+    assert wide["820"][-1] == "$117"
+    assert wide["818"][-1] == "$133"
 
 
 def test_discontinued_and_password_rows_dropped():
