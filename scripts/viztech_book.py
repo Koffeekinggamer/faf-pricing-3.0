@@ -10,7 +10,11 @@ from typing import Any, Iterable
 import openpyxl
 
 from scripts.dealer_book import ProcessedRow, RowKind, collapse_blank_rows, row_is_blank
-from scripts.dealer_terms import is_builder_contact_text, is_dealer_terms_text
+from scripts.dealer_terms import (
+    PHONE_NUMBER_RE,
+    is_builder_contact_text,
+    is_dealer_terms_text,
+)
 from scripts.pdf_plain_text import clean_pdf_plain_text
 from scripts.retail_text import (
     excel_percent_to_display,
@@ -52,7 +56,8 @@ ADD_ON_PRICE_COL_RE = re.compile(
 )
 UNFINISHED_SHEET_RE = re.compile(r"unfinished|retail\s*unf", re.I)
 ITEM_CODE_RE = re.compile(
-    r"^(?:[A-Z]{1,4}[-\d]|[\d]{3,5}[\s-][A-Z]{2}|#\d|M\d|MI\d|FV\d|[\d]+-[\dA-Z])",
+    # Require a digit after "N-" so prose like "2-tone Stain" is not an item code.
+    r"^(?:[A-Z]{1,4}[-\d]|[\d]{3,5}[\s-][A-Z]{2}|#\d|M\d|MI\d|FV\d|[\d]+-\d)",
     re.I,
 )
 MMYY_RE = re.compile(r"[_\s](\d{2})(\d{2})(?:-\d+)?\.(?:xlsx|xls)", re.I)
@@ -188,7 +193,8 @@ def section_title_from_path(path: Path) -> str:
 
 
 def section_dedupe_key(path: Path) -> str:
-    return section_title_from_path(path).casefold()
+    """One merge slot per workbook file (L&N main + bookcase share a section title)."""
+    return path.stem.casefold()
 
 
 @dataclass
@@ -226,7 +232,7 @@ def _cell_str(c: Any) -> str:
     return str(c).strip()
 
 
-def _is_wholesale_price(val: Any) -> bool:
+def _is_wholesale_price(val: Any, *, allow_yearish: bool = False) -> bool:
     if isinstance(val, str) and val.strip().upper() in {"#N/A", "N/A", "NA", "#NA"}:
         return False
     if is_percent_token(val):
@@ -235,7 +241,13 @@ def _is_wholesale_price(val: Any) -> bool:
         return False
     v = float(val)
     # Calendar years in headers (e.g. INTEG "2026 Pricelist") are not prices.
-    if abs(v - round(v)) < 1e-9 and 2015 <= int(round(v)) <= 2035:
+    # Real wholesale amounts can fall in 2015–2035 (L&N desks, LA Patio, Comfort);
+    # pass allow_yearish=True when the cell already sits in a finished price column.
+    if (
+        not allow_yearish
+        and abs(v - round(v)) < 1e-9
+        and 2015 <= int(round(v)) <= 2035
+    ):
         return False
     return 1 <= v <= 250_000
 
@@ -527,6 +539,30 @@ def load_workbook_sheets(path: Path) -> dict[str, list[list]]:
     raise ValueError(f"Unsupported workbook: {path}")
 
 
+def _is_priced_product_row(row: list) -> bool:
+    """True when the row looks like a SKU line (item code + wholesale $)."""
+    return any(_is_wholesale_price(c) for c in row) and bool(_row_item_label(row)[0])
+
+
+def _priced_product_survives_contact_false_positive(row: list, probe: str) -> bool:
+    """Keep SKU rows that trip contact/dealer heuristics via Phone Holder / PHONE|FAX."""
+    if not _is_priced_product_row(row):
+        return False
+    productish = " ".join(
+        _cell_str(c)
+        for c in row
+        if _cell_str(c)
+        and not re.fullmatch(r"phone|fax|tel\.?", _cell_str(c), re.I)
+    )
+    if not is_builder_contact_text(productish):
+        return True
+    # Cup/Phone Holder etc. — "phone" in product name with prices, no phone#
+    if not PHONE_NUMBER_RE.search(productish):
+        if not re.search(r"\b(?:email|@|www\.|https?://)\b", productish, re.I):
+            return True
+    return False
+
+
 def _drop_row(row: list, joined: str) -> bool:
     # Ignore raw wholesale numbers when classifying dealer/contact prose
     text_only = clean_pdf_plain_text(
@@ -537,6 +573,30 @@ def _drop_row(row: list, joined: str) -> bool:
         )
     )
     probe = text_only or joined
+    # Product rows with item code + prices survive contact/dealer false positives
+    # (Phone Holder descriptions, PHONE|FAX sidebar cells on chimes sheets).
+    if _priced_product_survives_contact_false_positive(row, probe):
+        # Still drop real policy/boilerplate that happens to share a code cell
+        low_probe = probe.lower()
+        if re.search(r"prices?\s+effective\b", low_probe):
+            return True
+        if re.search(r"to\s+access\s+digital\s+files|go\s+to\s*:", low_probe):
+            return True
+        if re.search(r"\bdiscontinued\b", low_probe):
+            return True
+        if any(
+            x in low_probe
+            for x in (
+                "password",
+                "viztechfurniture",
+                "lagwana.cloud",
+                "internet stores",
+                "internet price",
+                "internet dealer",
+            )
+        ):
+            return True
+        return False
     if is_dealer_terms_text(probe):
         return True
     low = probe.lower()
@@ -569,18 +629,112 @@ def _drop_row(row: list, joined: str) -> bool:
         r"\bconsidered\s+stock\b|instructions\s*-\s*please\s+read|\d+\s*%\s*discount\b|"
         r"\bfinshing\b|\bfinishing\b.*\bx\s*200\s*%|"
         r"approximate\s+finish(?:ing)?\s+costs?|"
-        r"internet\s+policy",
+        r"internet\s+(?:dealer\s+)?policy|brick\s+and\s+mortar|"
+        r"\bmark-?up\b.*\bestimated\s+finished\b|"
+        r"we\s+will\s+no\s+longer\s+offer\s+finishing\s+pricing",
         probe,
         re.I,
     ):
         return True
     if "wholesale price list" in low or re.match(r"^finished\s+wholesale\s*$", low):
         return True
+    if re.search(r"\bdiscontinued\b", low):
+        return True
+    if re.search(r"\bdealers?\b", low) and re.search(
+        r"internet|brick|mortar|mark-?up|promote", low
+    ):
+        return True
+    if re.search(r"prices?\s+effective\b", low):
+        return True
+    if re.search(r"to\s+access\s+digital\s+files|go\s+to\s*:", low):
+        return True
     if re.search(r"\bnet\s*30\b", low):
         return True
     if is_builder_contact_text(probe):
         return True
     return False
+
+
+def _is_finished_prices_band_label(cell: str) -> bool:
+    """Column-band title (L&N ESTIMATED FINISHED PRICE), not KKT prose notes."""
+    s = cell.strip()
+    if not s or len(s) > 72:
+        return False
+    if re.search(r"add\s+\d+\s*%|[\u2022\u2023]|^\s*[\u2022\-]\s", s, re.I):
+        return False
+    if re.search(r"\bto\s+finished\s+price\b", s, re.I):
+        return False
+    if re.search(r"estimated\s+finish(?:ing)?(?:\s+per\s+piece|\s+prices?)", s, re.I):
+        return False
+    return bool(
+        re.search(
+            r"(?:^|\s)(?:estimated\s+)?(?<!un)finished\s+prices?\s*$",
+            s,
+            re.I,
+        )
+    )
+
+
+def _estimated_finished_band_cols(header_rows: list[list], width: int) -> set[int]:
+    """L&N-style estimated-finished wood columns (not the unfinished band)."""
+    band_starts = [
+        j
+        for h in header_rows
+        for j, c in enumerate(h)
+        if isinstance(c, str) and _is_finished_prices_band_label(c)
+    ]
+    if not band_starts:
+        return set()
+    start = min(band_starts)
+    unfinished: set[int] = set()
+    for h in header_rows:
+        for j, c in enumerate(h):
+            if isinstance(c, str) and re.search(r"\bunfinished\b", c, re.I) and not re.search(
+                r"(?<!un)finished", c, re.I
+            ):
+                if j < start:
+                    unfinished.add(j)
+    expanded: set[int] = set()
+    finish_per_piece: set[int] = set()
+    for h in header_rows:
+        joined = " ".join(c.strip() for c in h if isinstance(c, str) and c.strip())
+        if not joined:
+            continue
+        if not _HEADER_HINT_RE.search(joined) and not re.search(
+            r"estimated\s+finished|unfinished|item\s*#|oak|cherry|maple",
+            joined,
+            re.I,
+        ):
+            continue
+        if re.search(r"\bdoor\s+add\b|\badds?\s+for\b", joined, re.I):
+            continue
+        for j in range(start, min(width + 1, len(h))):
+            c = h[j]
+            if isinstance(c, str) and c.strip():
+                if re.search(r"\bunfinished\b", c, re.I) and not re.search(
+                    r"(?<!un)finished", c, re.I
+                ):
+                    break
+                if re.search(
+                    r"estimated\s+finish(?:ing)?(?:\s+per\s+piece|\s+prices?)",
+                    c,
+                    re.I,
+                ):
+                    finish_per_piece.add(j)
+                    break
+                if re.search(
+                    r"^(?:item\s*(?:#|no|number)|description|\bsize\b)$",
+                    c.strip(),
+                    re.I,
+                ):
+                    break
+                if _is_finished_prices_band_label(c) and not re.search(
+                    r"\b(?:oak|cherry|maple|walnut|hickory|elm|qswo)\b", c, re.I
+                ):
+                    continue
+                expanded.add(j)
+    expanded -= finish_per_piece
+    return expanded - unfinished if expanded else set()
 
 
 def _finished_price_cols(header_rows: list[list], width: int) -> set[int]:
@@ -597,33 +751,75 @@ def _finished_price_cols(header_rows: list[list], width: int) -> set[int]:
             if FINISH_COST_RE.search(s) or ADD_ON_PRICE_COL_RE.search(s):
                 # Heritage finish cost / Jericho-Kohler finish Add — not wood prices
                 continue
+            if re.search(r"finished\s*add\b", s):
+                # KKT "Finished ADD" — composed separately, not a wood price
+                continue
+            if re.search(
+                r"estimated\s+finish(?:ing)?(?:\s+per\s+piece|\s+prices?)", s
+            ):
+                # L&N finish-cost helper column — not a wood price
+                continue
             if re.fullmatch(r"unf(?:in)?\.?", s) or (
                 re.search(r"\bunfinished\d*\b", s) and not re.search(r"\bfinished\b", s)
             ):
                 unfinished.add(j)
             elif re.fullmatch(r"fin\.?", s) or (
-                re.search(r"\bfinished\b", s) and not ADD_ON_PRICE_COL_RE.search(s)
+                re.search(r"\bfinished\b", s)
+                and not ADD_ON_PRICE_COL_RE.search(s)
+                and not re.search(r"finished\s*add\b", s)
             ):
                 finished.add(j)
             elif SEALED_PAINTED_RE.search(s):
                 finished.add(j)
-            elif re.search(r"\b(?:stain(?:ed)?|glaz(?:e|ing)|2[\s-]?tone|paint)\b", s):
-                # Fishers / Hilltop: Stain / Stained / 2-Tone & Glazing are finished
+            elif re.search(r"\b(?:standard|wood\s*grain)\b", s) and re.search(
+                r"\bpoly\b", s
+            ):
+                # LA Patio: Standard / Woodgrain / WOOD GRAIN poly finished goods
                 finished.add(j)
-    # Hoosier-style "FINISHED PRICES" band: expand through following wood headers
-    # (exclude "Finished Prices Add" upcharge columns).
+            elif len(s) <= 48 and re.search(
+                r"\b(?:fabric|leather|cowhide)\b", s
+            ):
+                # Lambright Comfort: Standard Fabric / Ultra Leather grade columns
+                finished.add(j)
+            elif len(s) <= 48 and re.search(
+                r"\b(?:stain(?:ed)?|glaz(?:e|ing)|2[\s-]?tone|paint)\b", s
+            ):
+                # Fishers / Hilltop / LA Patio column headers — not long stain notes
+                finished.add(j)
+    # Hoosier / L&N "FINISHED PRICES" / "ESTIMATED FINISHED PRICE" band: expand
+    # through following wood headers (exclude Add / finish-per-piece helpers).
     band_starts = [
         j
         for h in header_rows
         for j, c in enumerate(h)
         if isinstance(c, str)
-        and re.search(r"(?<!un)finished\s*prices?", c, re.I)
+        and _is_finished_prices_band_label(c)
         and not ADD_ON_PRICE_COL_RE.search(c)
+        and not re.search(r"finished\s*add\b", c, re.I)
+        and not re.search(
+            r"estimated\s+finish(?:ing)?(?:\s+per\s+piece|\s+prices?)", c, re.I
+        )
     ]
     if band_starts:
         start = min(band_starts)
         expanded: set[int] = set()
+        finish_per_piece: set[int] = set()
         for h in header_rows:
+            # Only expand across real header rows — skip data/prose that can
+            # re-introduce Estimated Finish Per Piece after a Door Add line.
+            joined = " ".join(
+                c.strip() for c in h if isinstance(c, str) and c.strip()
+            )
+            if not joined:
+                continue
+            if not _HEADER_HINT_RE.search(joined) and not re.search(
+                r"estimated\s+finished|unfinished|item\s*#|oak|cherry|maple",
+                joined,
+                re.I,
+            ):
+                continue
+            if re.search(r"\bdoor\s+add\b|\badds?\s+for\b", joined, re.I):
+                continue
             for j in range(start, min(width + 1, len(h))):
                 c = h[j]
                 if isinstance(c, str) and c.strip():
@@ -631,15 +827,168 @@ def _finished_price_cols(header_rows: list[list], width: int) -> set[int]:
                         r"(?<!un)finished", c, re.I
                     ):
                         break
+                    if re.search(
+                        r"estimated\s+finish(?:ing)?(?:\s+per\s+piece|\s+prices?)",
+                        c,
+                        re.I,
+                    ):
+                        finish_per_piece.add(j)
+                        break
+                    if re.search(
+                        r"^(?:item\s*(?:#|no|number)|description|\bsize\b)$",
+                        c.strip(),
+                        re.I,
+                    ):
+                        break
+                    # Skip the band title cell; wood names under it stay eligible.
+                    if _is_finished_prices_band_label(c) and not re.search(
+                        r"\b(?:oak|cherry|maple|walnut|hickory|elm|qswo)\b", c, re.I
+                    ):
+                        continue
                     expanded.add(j)
-                elif c not in (None, "") and _is_wholesale_price(c):
-                    expanded.add(j)
+        expanded -= finish_per_piece
         if expanded:
             return expanded - unfinished
+    # Fin|Unf or Unf|Fin pairs: keep the Finished column of each pair.
+    # Stop before a second Description panel or a gap (KKT mirrored reprint).
+    def _is_fin_hdr(s: str) -> bool:
+        s = s.lower().strip()
+        return bool(
+            re.fullmatch(r"fin\.?", s)
+            or (
+                re.search(r"\bfinished\b", s)
+                and not re.search(r"finished\s*add\b", s)
+                and not ADD_ON_PRICE_COL_RE.search(s)
+            )
+        )
+
+    def _is_unf_hdr(s: str) -> bool:
+        s = s.lower().strip()
+        return bool(
+            re.fullmatch(r"unf(?:in)?\.?", s)
+            or (
+                re.search(r"\bunfinished\b", s) and not re.search(r"\bfinished\b", s)
+            )
+        )
+
+    pair_finished: set[int] = set()
+    for h in header_rows:
+        for j in range(min(width, len(h) - 1)):
+            a, b = h[j], h[j + 1]
+            if not isinstance(a, str) or not isinstance(b, str):
+                continue
+            if _is_fin_hdr(a) and _is_unf_hdr(b):
+                pair_finished.add(j)
+            elif _is_unf_hdr(a) and _is_fin_hdr(b):
+                pair_finished.add(j + 1)
+    if pair_finished:
+        # Mirrored reprint panels (same wood labels + same prices) — keep left
+        # only. Greenville-style dual panels with *different* wood headers keep
+        # both sides (4 finished woods).
+        desc_cols = sorted(
+            {
+                j
+                for h in header_rows
+                for j, c in enumerate(h)
+                if isinstance(c, str)
+                and re.fullmatch(r"description", c.strip(), re.I)
+            }
+        )
+        if len(desc_cols) >= 2:
+            cut = desc_cols[1]
+            left_pf = {j for j in pair_finished if j < cut}
+            right_pf = {j for j in pair_finished if j >= cut}
+            left_woods = _wood_header_cells(header_rows, before=cut)
+            right_woods = _wood_header_cells(header_rows, after=cut)
+            # True reprint: identical wood-header cells, empty right labels, or a
+            # full left wood set (≥3) with a layout twin (Raleigh). Greenville
+            # keeps both sides when left has only 1–2 woods and species *groups*
+            # differ (even if maple/cherry tokens appear on both).
+            if (
+                not right_woods
+                or left_woods == right_woods
+                or (len(left_pf) >= 3 and right_pf)
+                or (len(left_pf) <= 2 and right_pf)
+            ):
+                pair_finished = left_pf
+            # else keep both panels (≥3 distinct finished woods on left + new species)
+        sorted_pf = sorted(pair_finished)
+        for a, b in zip(sorted_pf, sorted_pf[1:]):
+            if b - a > 2:
+                left = {j for j in pair_finished if j < b}
+                right = {j for j in pair_finished if j >= b}
+                left_woods = _wood_header_cells(header_rows, before=b)
+                right_woods = _wood_header_cells(header_rows, after=b - 1)
+                # Quick Ship / full-set reprint: identical / empty right headers
+                # or left already carries a complete wood band.
+                if (
+                    not right_woods
+                    or left_woods == right_woods
+                    or (len(left) >= 3 and right)
+                ):
+                    pair_finished = left
+                break
+        if pair_finished:
+            return pair_finished - unfinished
     if finished:
         return finished - unfinished
     # Barkman-style: skip col1 markup fractions; take numeric cols not in unfinished set
     return set()
+
+
+def _wood_header_cells(
+    header_rows: list[list], *, before: int | None = None, after: int | None = None
+) -> set[str]:
+    """Normalized full wood-header cell texts in a column range (not token soup)."""
+    out: set[str] = set()
+    wood_tok = re.compile(
+        r"\b(?:oak|maple|cherry|hickory|elm|qswo|qwso|walnut|ash|alder|"
+        r"pine|rustic|wormy|brown|hard|sap|white)\b",
+        re.I,
+    )
+    for h in header_rows:
+        for j, c in enumerate(h):
+            if before is not None and j >= before:
+                continue
+            if after is not None and j <= after:
+                continue
+            if not isinstance(c, str) or not c.strip():
+                continue
+            if not wood_tok.search(c):
+                continue
+            # Skip Fin/Unf / Description labels that may sit on the same row
+            if re.fullmatch(
+                r"(?:fin(?:ished)?|unf(?:inished)?|description|item\s*(?:#|no|number))",
+                c.strip(),
+                re.I,
+            ):
+                continue
+            norm = re.sub(r"\s+", " ", c).strip().casefold()
+            out.add(norm)
+    return out
+
+
+def _wood_header_labels(
+    header_rows: list[list], *, before: int | None = None, after: int | None = None
+) -> set[str]:
+    """Normalized wood-species tokens from header cells in a column range."""
+    out: set[str] = set()
+    for h in header_rows:
+        for j, c in enumerate(h):
+            if before is not None and j >= before:
+                continue
+            if after is not None and j <= after:
+                continue
+            if not isinstance(c, str):
+                continue
+            for m in re.finditer(
+                r"\b(?:oak|maple|cherry|hickory|elm|qswo|walnut|ash|alder|"
+                r"pine|rustic|wormy|brown|hard|sap|white)\b",
+                c,
+                re.I,
+            ):
+                out.add(m.group(0).casefold())
+    return out
 
 
 def _excluded_price_header_cols(header_rows: list[list], width: int) -> set[int]:
@@ -659,6 +1008,15 @@ def _excluded_price_header_cols(header_rows: list[list], width: int) -> set[int]
             if re.fullmatch(r"price\s*ea\.?", s) or s in {"price ea", "price ea."}:
                 bad.add(j)
             if FINISH_COST_RE.search(s) or ADD_ON_PRICE_COL_RE.search(s):
+                bad.add(j)
+            if re.search(r"finished\s*add\b", s):
+                bad.add(j)
+            if re.search(
+                r"estimated\s+finish(?:ing)?(?:\s+per\s+piece|\s+prices?)", s
+            ):
+                bad.add(j)
+            if re.search(r"\badj\.?\s*shelves?\b|\badjustable\s+shelves?\b", s):
+                # L&N bookcase shelf-count column — not a wholesale price
                 bad.add(j)
     # When Sealed/Painted exists, drop other Hershy wholesale tiers (Price Ea already bad)
     if sealed:
@@ -683,6 +1041,165 @@ class FinishCostLayout:
     stain_col: int | None
     paint_col: int | None
     top_col: int | None
+
+
+@dataclass
+class FinishedAddLayout:
+    """KKT chairs: unfinished wood bases + shared Finished ADD → finished wholesale."""
+
+    wood_cols: list[int]
+    add_col: int
+
+
+def _detect_finished_add_layout(
+    rows: list[list], start: int
+) -> FinishedAddLayout | None:
+    """Detect unfinished woods + a single Finished ADD column (Kountry Knob chairs).
+
+    Family sections often use a bare ``Item # | ALAMO`` title without repeating
+    the wood / Finished ADD headers — walk further up the sheet for those labels.
+    """
+    family_row = _nearest_family_header_row(rows, start)
+    if _family_is_finished_only(rows, family_row):
+        return None
+    header_block, width = _header_block_near(rows, start)
+    item_cols = _item_code_cols(header_block, width)
+    # Also scan rows above the local header for the last Finished ADD band.
+    scan_rows = list(header_block)
+    scan_floor = family_row if family_row is not None else 0
+    for back in range(1, min(start - scan_floor, 80) + 1):
+        idx = start - back
+        if idx < scan_floor:
+            break
+        row = rows[idx]
+        joined = " ".join(
+            c.strip() for c in row if isinstance(c, str) and c.strip()
+        ).lower()
+        if re.search(r"finished\s*add\b", joined) or (
+            "unfinished" in joined and re.search(r"\badd\b", joined)
+        ):
+            if row not in scan_rows:
+                scan_rows.insert(0, row)
+            # Include the wood-name row just above Unfinished/Add
+            if idx > 0 and rows[idx - 1] not in scan_rows:
+                scan_rows.insert(0, rows[idx - 1])
+            break
+
+    add_cols: list[int] = []
+    finished_add_cols: list[int] = []
+    unfinished_cols: list[int] = []
+    has_finished_add_label = False
+    for h in scan_rows:
+        for j in range(min(width + 1, len(h))):
+            c = h[j]
+            if not isinstance(c, str):
+                continue
+            s = c.lower().strip()
+            if re.search(r"finished\s*add\b", s):
+                has_finished_add_label = True
+                finished_add_cols.append(j)
+                add_cols.append(j)
+            elif re.fullmatch(r"add", s):
+                add_cols.append(j)
+            elif re.fullmatch(r"unf(?:in)?\.?", s) or (
+                re.search(r"\bunfinished\b", s) and not re.search(r"\bfinished\b", s)
+            ):
+                unfinished_cols.append(j)
+    # MIA-style: Unfinished… + Add + Finished without the words "Finished ADD"
+    if not has_finished_add_label:
+        if unfinished_cols and add_cols and len(unfinished_cols) >= 2:
+            has_finished_add_label = True
+        else:
+            return None
+    add_col = (
+        min(finished_add_cols) if finished_add_cols else (min(add_cols) if add_cols else None)
+    )
+    if add_col is None:
+        return None
+    woods = sorted({j for j in unfinished_cols if j < add_col})
+    if len(woods) < 2:
+        # Fall back: wood specie headers left of Add (may have blank first wood)
+        woods = []
+        for h in scan_rows:
+            for j in range(add_col):
+                c = h[j] if j < len(h) else None
+                if not isinstance(c, str):
+                    continue
+                if re.search(
+                    r"\b(?:oak|maple|cherry|hickory|elm|qswo|walnut|ash)\b", c, re.I
+                ):
+                    woods.append(j)
+        woods = sorted(set(woods))
+    # Include blank leading wood slots when Unfinished labels span more cols
+    if unfinished_cols:
+        u_left = sorted(j for j in unfinished_cols if j < add_col)
+        if u_left and (not woods or min(u_left) < min(woods)):
+            woods = sorted(set(woods) | set(u_left))
+    woods = sorted(j for j in woods if j not in item_cols)
+    if len(woods) < 2:
+        return None
+    # Confirm ADD values and unfinished bases on nearby rows
+    add_ok = False
+    wood_ok = 0
+    for row in rows[start : start + 40]:
+        if add_col < len(row) and _is_wholesale_price(row[add_col]):
+            add_ok = True
+        wood_ok = max(
+            wood_ok,
+            sum(1 for j in woods if j < len(row) and _is_wholesale_price(row[j])),
+        )
+        if add_ok and wood_ok >= 2:
+            return FinishedAddLayout(wood_cols=woods, add_col=add_col)
+    return None
+
+
+def _transform_finished_add_row(
+    row: list,
+    layout: FinishedAddLayout,
+    multiplier: float,
+    *,
+    spots: list[SpotSample],
+    item_hint: str,
+) -> list[str]:
+    label, label_j = _row_item_label(row)
+    if not label:
+        label = item_hint
+    if not label or re.search(r"\bapprox", label, re.I):
+        return []
+    lab = sanitize_retail_text(label, multiplier)
+    if not lab:
+        return []
+    if layout.add_col >= len(row) or not _is_wholesale_price(row[layout.add_col]):
+        return []
+    add_v = float(row[layout.add_col])
+    cells: list[str] = [lab]
+    # Keep short description after item code (Side Chair, Arm Chair, …)
+    if label_j >= 0:
+        for j in range(label_j + 1, min(label_j + 3, layout.wood_cols[0])):
+            if j >= len(row) or j == layout.add_col:
+                continue
+            v = row[j]
+            if _is_wholesale_price(v) or _is_na_cell(v):
+                continue
+            if isinstance(v, str):
+                t = sanitize_retail_text(v, multiplier)
+                if t and _keep_item_mid_text(t):
+                    cells.append(t)
+                    break
+    got = False
+    for j in layout.wood_cols:
+        if j >= len(row) or not _is_wholesale_price(row[j]):
+            # Blank first-wood slots (LEXI/MIA) — omit, do not emit a dash column
+            continue
+        wholesale = float(row[j]) + add_v
+        retail = retail_price_cell(wholesale, multiplier)
+        cells.append(retail)
+        got = True
+        if len(spots) < 3:
+            spots.append(
+                SpotSample(item=label[:80] or f"col{j}", wholesale=wholesale, retail=retail)
+            )
+    return cells if got else []
 
 
 def _detect_finish_cost_layout(
@@ -713,9 +1230,11 @@ def _detect_finish_cost_layout(
     # Wood header cols: labeled unfinished group, or columns left of finish cost under wood names
     finish_hdrs = {j for j in (stain_hdr, paint_hdr, top_hdr) if j is not None}
     wood_hdrs = sorted(j for j in unfinished_hdr if j not in finish_hdrs)
-    if not wood_hdrs:
-        # Occasionals: wood specie names sit under UNFINISHED without the word unfinished
+    if len(wood_hdrs) < 2:
+        # Occasionals / island tops: wood specie names sit under a single
+        # UNFINISHED band label (or none) without per-wood "unfinished" cells.
         first_finish = min(finish_hdrs)
+        specie_woods: list[int] = []
         for h in header_block:
             # Skip note / prose rows that happen to mention a wood species
             joined = " ".join(
@@ -740,8 +1259,9 @@ def _detect_finish_cost_layout(
                 if re.search(
                     r"\b(?:oak|maple|hickory|cherry|elm|qswo|walnut|pine)\b", s
                 ):
-                    wood_hdrs.append(j)
-        wood_hdrs = sorted(set(wood_hdrs))
+                    specie_woods.append(j)
+        if len(set(specie_woods)) >= 2:
+            wood_hdrs = sorted(set(specie_woods))
     if len(wood_hdrs) < 2:
         return None
     # Header cols may have gaps (Kitchen island top at col 8 after empty col 7).
@@ -796,13 +1316,24 @@ _HEADER_HINT_RE = re.compile(
     r"wholesale\s*price|sealed\s*/\s*painted|price\s*ea\.?|"
     r"sug\.?\s*retail|suggested\s*retail|unf\.?|fin\.?|stained)$|"
     r"\bunfinished\b|\bfinished\s*prices?|\bcost\s+to\s+(?:stain|paint)\s+finish|"
-    r"\bwoodgrain|\bbrights\b|\bstained\b",
+    r"\bwood\s*grain|\bbrights\b|\bstained\b|"
+    r"\b(?:fabric|leather|cowhide)\b",
     re.I,
 )
 
 
 def _row_looks_like_column_header(row: list) -> bool:
     """True for grid header rows, not instructional prose that mentions 'finished'."""
+    joined = " ".join(
+        c.strip() for c in row if isinstance(c, str) and c.strip()
+    )
+    if re.search(r"\btop\s*size\b", joined, re.I) and not any(
+        isinstance(c, str)
+        and re.search(r"^item\s*(?:#|number|no\.?)$", c.strip(), re.I)
+        for c in row
+    ):
+        # L&N size-band labels (UNFINISHED / ESTIMATED FINISHED PRICE) — not the wood grid.
+        return False
     hits = 0
     for c in row:
         if not isinstance(c, str):
@@ -822,18 +1353,126 @@ def _row_looks_like_column_header(row: list) -> bool:
     )
 
 
+def _row_has_fin_unf_pair_labels(row: list) -> bool:
+    texts = [
+        c.strip().lower()
+        for c in row
+        if isinstance(c, str) and c.strip()
+    ]
+    has_fin = any(
+        re.fullmatch(r"fin\.?", t)
+        or (re.search(r"\bfinished\b", t) and not re.search(r"finished\s*add\b", t))
+        for t in texts
+    )
+    has_unf = any(
+        re.fullmatch(r"unf(?:in)?\.?", t)
+        or (re.search(r"\bunfinished\b", t) and not re.search(r"\bfinished\b", t))
+        for t in texts
+    )
+    return has_fin and has_unf
+
+
+def _nearest_family_header_row(rows: list[list], start: int) -> int | None:
+    """Row index of the nearest ``Item #`` family title above ``start``."""
+    for back in range(1, min(start, 120) + 1):
+        idx = start - back
+        row = rows[idx]
+        if not row:
+            continue
+        if isinstance(row[0], str) and re.fullmatch(
+            r"item\s*(?:#|number|no\.?)", row[0].strip(), re.I
+        ):
+            return idx
+    return None
+
+
+def _family_is_finished_only(rows: list[list], family_row: int | None) -> bool:
+    """KKT families priced finished-only (Walnut is a wood column, not Finished ADD)."""
+    if family_row is None:
+        return False
+    for j in range(family_row, min(family_row + 4, len(rows))):
+        joined = " ".join(
+            c.strip() for c in rows[j] if isinstance(c, str) and c.strip()
+        ).lower()
+        if "only available in finished" in joined:
+            return True
+        if "not available unfinished" in joined:
+            return True
+        texts = [
+            c.strip().lower()
+            for c in rows[j]
+            if isinstance(c, str) and c.strip()
+        ]
+        fin = sum(
+            1
+            for t in texts
+            if re.fullmatch(r"fin\.?", t)
+            or (
+                re.search(r"\bfinished\b", t)
+                and not re.search(r"finished\s*add\b", t)
+            )
+        )
+        unf = sum(
+            1
+            for t in texts
+            if re.fullmatch(r"unf(?:in)?\.?", t)
+            or (
+                re.search(r"\bunfinished\b", t) and not re.search(r"\bfinished\b", t)
+            )
+        )
+        if fin >= 3 and unf == 0:
+            return True
+    return False
+
+
+def _finished_only_wood_cols(rows: list[list], start: int) -> set[int]:
+    """Finished-only KKT chair rows: first contiguous wood wholesale band (skip twin)."""
+    family_row = _nearest_family_header_row(rows, start)
+    if not _family_is_finished_only(rows, family_row):
+        return set()
+    row = rows[start]
+    _, label_j = _row_item_label(row)
+    min_j = (label_j + 1) if label_j >= 0 else 1
+    nums = sorted(
+        j
+        for j in range(min_j, len(row))
+        if _is_wholesale_price(row[j], allow_yearish=True)
+    )
+    if len(nums) < 2:
+        return set()
+    run: list[int] = [nums[0]]
+    for j in nums[1:]:
+        if j <= run[-1] + 2:
+            run.append(j)
+        else:
+            break
+    return set(run)
+
+
 def _header_block_near(rows: list[list], start: int) -> tuple[list[list], int]:
     header_start = None
     # Prefer a real header above the current row (skip the current data line).
-    for back in range(1, min(start, 40) + 1):
+    header_candidates: list[int] = []
+    for back in range(1, min(start, 60) + 1):
         idx = start - back
         row = rows[idx] if idx < len(rows) else []
         if _row_looks_like_column_header(row):
-            header_start = idx
-            break
+            header_candidates.append(idx)
+    if header_candidates:
+        for idx in header_candidates:
+            row = rows[idx]
+            if any(
+                isinstance(c, str)
+                and re.search(r"^item\s*(?:#|number|no\.?)$", c.strip(), re.I)
+                for c in row
+            ):
+                header_start = idx
+                break
+        if header_start is None:
+            header_start = header_candidates[0]
     if header_start is None:
         # Fall back: UNFINISHED / FINISH band rows (Heritage Occasionals)
-        for back in range(1, min(start, 40) + 1):
+        for back in range(1, min(start, 60) + 1):
             idx = start - back
             row = rows[idx] if idx < len(rows) else []
             joined = " ".join(
@@ -844,8 +1483,45 @@ def _header_block_near(rows: list[list], start: int) -> tuple[list[list], int]:
                 break
     if header_start is None:
         header_start = max(0, start - 1)
-    header_block = rows[header_start : header_start + 12]
-    width = max((len(r) for r in rows[header_start : header_start + 40]), default=0)
+    # Include rows above the Item/Description header so section labels like
+    # L&N "UNFINISHED" / "ESTIMATED FINISHED PRICE" and KKT dual Description
+    # panels participate in column detection.
+    family_row = _nearest_family_header_row(rows, start)
+    finished_only = _family_is_finished_only(rows, family_row)
+    block_start = max(0, header_start - 4)
+    if finished_only and family_row is not None:
+        block_start = max(block_start, family_row)
+    header_block = rows[block_start : header_start + 12]
+    # Raleigh benches reprint Item/wood headers without the Fin|Unf sub-row —
+    # pull the nearest Fin|Unf pair labels from further above into the block.
+    if not any(_row_has_fin_unf_pair_labels(h) for h in header_block):
+        for back in range(1, min(header_start, 80) + 1):
+            idx = header_start - back
+            if idx < 0:
+                break
+            if finished_only and family_row is not None and idx < family_row:
+                break
+            if _row_has_fin_unf_pair_labels(rows[idx]):
+                header_block = [rows[idx]] + list(header_block)
+                block_start = min(block_start, idx)
+                break
+    if finished_only and family_row is not None and family_row > block_start:
+        header_block = rows[family_row : header_start + 12]
+        block_start = family_row
+    block_end = min(len(rows), header_start + 12)
+    for j in range(header_start + 1, min(len(rows), header_start + 16)):
+        if (
+            j < len(rows)
+            and rows[j]
+            and isinstance(rows[j][0], str)
+            and re.fullmatch(
+                r"item\s*(?:#|number|no\.?)", rows[j][0].strip(), re.I
+            )
+        ):
+            block_end = j
+            break
+    header_block = rows[block_start:block_end]
+    width = max((len(r) for r in rows[block_start : header_start + 40]), default=0)
     return header_block, width
 
 
@@ -1114,8 +1790,19 @@ def _row_item_label(row: list) -> tuple[str, int]:
     return "", -1
 
 
-# Hope Works mid-columns that are type tokens, not product descriptions.
-_MID_TEXT_DENY = frozenset({"chair", "upholstered", "upholstery"})
+# Mid-columns that are type / option tokens, not product descriptions.
+_MID_TEXT_DENY = frozenset(
+    {
+        "chair",
+        "upholstered",
+        "upholstery",
+        "standard",
+        "optional",
+        "swivel",
+        "yes",
+        "no",
+    }
+)
 _BED_SIZE_RE = re.compile(
     r"^(twin|full|queen|king|cal(?:ifornia)?\s*king|"
     r"full\s*/?\s*queen|king\s*/?\s*cal(?:ifornia)?\s*king)$",
@@ -1207,7 +1894,8 @@ def _transform_row_prices(
             # Leave blank — do not invent a retail number for call-for cells.
             cells.append("")
             continue
-        if _is_wholesale_price(v):
+        # Price-column cells may legitimately be 2015–2035 wholesale amounts.
+        if _is_wholesale_price(v, allow_yearish=True):
             wholesale = float(v)
             retail = retail_price_cell(v, multiplier)
             cells.append(retail)
@@ -1228,11 +1916,32 @@ def _transform_row_prices(
 def _labeled_cols_have_prices(
     rows: list[list], start: int, labeled: set[int]
 ) -> bool:
-    """True when most priced rows actually store values in the labeled columns."""
+    """True when most priced product rows actually store values in the labeled columns.
+
+    Ignore short option/finish-add lines (Quick Ship '2 Tone' / 'Paint' / 'Glaze')
+    so they cannot outvote real chair/table SKUs.
+    """
     hits = misses = 0
+    skip_labs = {
+        "2 tone",
+        "2-tone",
+        "paint",
+        "glaze",
+        "tables",
+        "benches",
+        "chairs",
+        "options",
+    }
     for row in rows[start : start + 120]:
         if not any(_is_wholesale_price(c) for c in row):
             continue
+        lab0 = _cell_str(row[0]) if row else ""
+        if lab0.casefold().strip() in skip_labs or (
+            lab0 and len(lab0) <= 8 and not any(_is_wholesale_price(row[j]) for j in labeled if j < len(row))
+        ):
+            # Lone option surcharge rows — do not count as product misses
+            if not any(j < len(row) and _is_wholesale_price(row[j]) for j in labeled):
+                continue
         if any(j < len(row) and _is_wholesale_price(row[j]) for j in labeled):
             hits += 1
         else:
@@ -1363,16 +2072,61 @@ def _wood_cols_before_finished_add(rows: list[list], width: int) -> set[int]:
     return set(range(max(prev_add + 1, add_j - 6), add_j))
 
 
+def _has_fabric_or_option_headers(header_block: list[list], before_col: int) -> bool:
+    """Comfort-style surcharges only; skip L&N unfinished wood bands."""
+    for h in header_block:
+        for j, c in enumerate(h):
+            if j >= before_col or not isinstance(c, str):
+                continue
+            s = c.casefold()
+            if any(
+                k in s
+                for k in (
+                    "fabric",
+                    "leather",
+                    "swivel",
+                    "lay flat",
+                    "usb",
+                    "head tilt",
+                    "electric",
+                )
+            ):
+                return True
+    return False
+
+
+def _leading_option_price_cols(
+    rows: list[list], start: int, before_col: int
+) -> set[int]:
+    """Lambright Comfort: electric/swivel/USB surcharges before fabric grade columns."""
+    row = rows[start]
+    _, label_j = _row_item_label(row)
+    lo = max((label_j + 1) if label_j >= 0 else 1, 1)
+    hi = max(lo, before_col)
+    return {
+        j
+        for j in range(lo, hi)
+        if j < len(row) and _is_wholesale_price(row[j], allow_yearish=True)
+    }
+
+
 def _infer_price_cols(rows: list[list], start: int) -> set[int]:
     cols: set[int] = set()
     # Prefer a nearby header row above the current line when present
     header_block, width = _header_block_near(rows, start)
+    item_cols = _item_code_cols(header_block, width)
+    excluded_early = _excluded_price_header_cols(header_block, width)
+    est_band = _estimated_finished_band_cols(header_block, width)
+    if est_band and _labeled_cols_have_prices(rows, start, est_band):
+        return est_band - item_cols - excluded_early
+    only_finished = _finished_only_wood_cols(rows, start)
+    if only_finished and _labeled_cols_have_prices(rows, start, only_finished):
+        return only_finished - item_cols - excluded_early
     width = max(
         width,
         max((len(r) for r in rows[: start + 1]), default=0),
         max((len(r) for r in rows[max(0, start - 60) : start + 1]), default=0),
     )
-    item_cols = _item_code_cols(header_block, width)
     excluded = _excluded_price_header_cols(header_block, width) | _addon_cols_above(
         rows, start, width
     )
@@ -1386,30 +2140,57 @@ def _infer_price_cols(rows: list[list], start: int) -> set[int]:
             j
             for j in labeled
             if any(
-                j < len(row) and _is_wholesale_price(row[j])
+                j < len(row) and _is_wholesale_price(row[j], allow_yearish=True)
                 for row in rows[start : start + 120]
             )
         }
         if populated and _labeled_cols_have_prices(rows, start, populated):
-            return populated - item_cols - excluded
+            chosen = populated - item_cols - excluded
+            if chosen and _has_fabric_or_option_headers(header_block, min(chosen)):
+                chosen |= _leading_option_price_cols(rows, start, min(chosen))
+            return chosen
+        # Fin|Unf / fabric labels with real values win over sparse option-line noise
+        # (Quick Ship chairs after Oregon Arm) even when hits < misses.
+        if populated and len(populated) >= 1:
+            chosen = populated - item_cols - excluded
+            if chosen and _has_fabric_or_option_headers(header_block, min(chosen)):
+                chosen |= _leading_option_price_cols(rows, start, min(chosen))
+            return chosen
     if labeled and _labeled_cols_have_prices(rows, start, labeled):
         return labeled - item_cols - excluded
     if labeled:
         mirrored = _mirror_finished_cols(rows, start, header_block, width)
         if mirrored:
             return mirrored - item_cols - excluded
-        # J Miller: "Finished" header sits one column right of the value cells
-        left_of_finished = {
-            j - 1
-            for j in labeled
-            if j > 0
-            and any(
-                j - 1 < len(row) and _is_wholesale_price(row[j - 1])
-                for row in rows[start : start + 80]
-            )
-        }
-        if left_of_finished and _labeled_cols_have_prices(rows, start, left_of_finished):
-            return left_of_finished - item_cols - excluded
+        # J Miller: "Finished" header sits one column right of the value cells.
+        # Skip when Finished is paired with Unfinished on the right (KKT Quick Ship).
+        pair_unf_right = False
+        for h in header_block:
+            for j in labeled:
+                if j + 1 < len(h) and isinstance(h[j + 1], str):
+                    s = h[j + 1].lower().strip()
+                    if re.fullmatch(r"unf(?:in)?\.?", s) or (
+                        re.search(r"\bunfinished\b", s)
+                        and not re.search(r"\bfinished\b", s)
+                    ):
+                        pair_unf_right = True
+                        break
+            if pair_unf_right:
+                break
+        if not pair_unf_right:
+            left_of_finished = {
+                j - 1
+                for j in labeled
+                if j > 0
+                and any(
+                    j - 1 < len(row) and _is_wholesale_price(row[j - 1])
+                    for row in rows[start : start + 80]
+                )
+            }
+            if left_of_finished and _labeled_cols_have_prices(
+                rows, start, left_of_finished
+            ):
+                return left_of_finished - item_cols - excluded
     # Hershy Aurora/Eclipse: prefer wholesale + woodgrain, drop suggested retail
     wholesale_hdr: set[int] = set()
     woodgrain_hdr: set[int] = set()
@@ -1420,7 +2201,7 @@ def _infer_price_cols(rows: list[list], start: int) -> set[int]:
             s = c.lower().strip()
             if re.search(r"wholesale\s*price", s):
                 wholesale_hdr.add(j)
-            if re.search(r"woodgrain|brights", s):
+            if re.search(r"wood\s*grain|brights", s):
                 woodgrain_hdr.add(j)
     if wholesale_hdr:
         prefer = (wholesale_hdr | woodgrain_hdr) - excluded - item_cols
@@ -1467,8 +2248,12 @@ def _infer_price_cols(rows: list[list], start: int) -> set[int]:
     return {j for j in cols if j not in bad}
 
 def _row_unf_fin_kind(row: list) -> str | None:
-    """INTEG-style rows labeled 'unfinished' / 'finished' in a status column."""
-    for c in row:
+    """INTEG-style rows labeled 'unfinished' / 'finished' in an early status column.
+
+    Ignore trailing legend cells (L&N 'Finished' reprint labels) so we do not
+    treat every priced row as an INTEG finished twin.
+    """
+    for c in row[:4]:
         if not isinstance(c, str):
             continue
         s = c.strip().lower()
@@ -1495,6 +2280,7 @@ def _process_sheet(
     elif clean_name.strip().lower() not in ("wholesale", "finished wholesale"):
         out.append(ProcessedRow(RowKind.SUBHEAD, [clean_name]))
     item_hint = ""
+    last_finished_add: FinishedAddLayout | None = None
     i = 0
     while i < len(rows):
         row = rows[i]
@@ -1582,10 +2368,12 @@ def _process_sheet(
                 i += 1
                 continue
         # Pure Add label with no adjacent value and no embedded $ — omit so the
-        # PDF never ends a line with a bare "Add".
+        # PDF never ends a line with a bare "Add". Keep percent-add prose
+        # ("For 1¼\" tops add 15%") and section titles for the Options page.
         if (
             _row_has_add_label(row)
             and not _row_has_embedded_dollar_text(row)
+            and not re.search(r"add\s+\d+\s*%", joined, re.I)
             and not any(
                 _is_percent_token(c) or _is_wholesale_price(c) for c in row
             )
@@ -1614,7 +2402,12 @@ def _process_sheet(
                 prose = _strip_contact_pricing_phrases(
                     sanitize_retail_text(c, multiplier)
                 )
-                if not prose or len(prose) <= 12 or is_dealer_terms_text(prose):
+                if not prose or is_dealer_terms_text(prose):
+                    continue
+                # Keep short ALL-CAPS section titles (FOR TWO TONE) and percent adds
+                if len(prose) <= 12 and not (
+                    prose.isupper() or re.search(r"\d+\s*%", prose)
+                ):
                     continue
                 key = re.sub(r"\s+", " ", prose).casefold()
                 if key in seen_notes:
@@ -1625,6 +2418,58 @@ def _process_sheet(
                 out.append(ProcessedRow(RowKind.PROSE, note_cells[:4]))
             i += 1
             continue
+        # KKT Options: "2-tone Stain : Add $60" etc. are product-note prose even
+        # when ITEM_CODE_RE historically matched the leading "2-t".
+        if (
+            label_early
+            and re.search(r"\badd\b", joined, re.I)
+            and (
+                _row_has_embedded_dollar_text(row)
+                or re.search(r"add\s+\d+\s*%", joined, re.I)
+            )
+            and not any(_is_wholesale_price(c) for c in row)
+        ):
+            prose = _strip_contact_pricing_phrases(
+                sanitize_retail_text(joined, multiplier)
+            )
+            if prose and len(prose) > 8 and not is_dealer_terms_text(prose):
+                out.append(ProcessedRow(RowKind.PROSE, [prose]))
+                i += 1
+                continue
+        # Short ALL-CAPS option section titles (TOPS / FOR TWO TONE)
+        if (
+            label_early
+            and label_early.isupper()
+            and 3 <= len(label_early) <= 40
+            and not any(_is_wholesale_price(c) for c in row)
+            and not re.search(r"\d", label_early)
+        ):
+            prose = sanitize_retail_text(label_early, multiplier)
+            if prose:
+                out.append(ProcessedRow(RowKind.SUBHEAD, [prose]))
+                i += 1
+                continue
+        if (
+            row
+            and isinstance(row[0], str)
+            and re.fullmatch(r"item\s*(?:#|number|no\.?)", row[0].strip(), re.I)
+        ):
+            if _family_is_finished_only(rows, i):
+                last_finished_add = None
+        finished_add = _detect_finished_add_layout(rows, i) or last_finished_add
+        if finished_add and _family_is_finished_only(
+            rows, _nearest_family_header_row(rows, i)
+        ):
+            finished_add = None
+        if finished_add and any(_is_wholesale_price(c) for c in row):
+            cells = _transform_finished_add_row(
+                row, finished_add, multiplier, spots=spots, item_hint=item_hint
+            )
+            if cells:
+                last_finished_add = finished_add
+                out.append(ProcessedRow(RowKind.WIDE, cells))
+                i += 1
+                continue
         finish_layout = _detect_finish_cost_layout(rows, i)
         if finish_layout and any(_is_wholesale_price(c) for c in row):
             cells = _transform_finish_cost_row(
@@ -1652,10 +2497,19 @@ def _process_sheet(
         price_cols = _infer_price_cols(rows, i)
         row_width = max(len(row), max((len(r) for r in rows[max(0, i - 60) : i + 1]), default=0))
         addon_skip = _addon_cols_above(rows, i, row_width)
+        excluded_data = (
+            _excluded_price_header_cols(header_block, row_width) | addon_skip
+        )
         if price_cols:
-            use_cols = [j for j in sorted(price_cols) if j not in addon_skip]
+            use_cols = [
+                j for j in sorted(price_cols) if j not in addon_skip and j not in excluded_data
+            ]
         else:
-            use_cols = [j for j in range(len(row)) if j not in addon_skip]
+            use_cols = [
+                j
+                for j in range(len(row))
+                if j not in addon_skip and j not in excluded_data
+            ]
         cells = _transform_row_prices(
             row, multiplier, use_cols, spots=spots, item_hint=item_hint
         )
@@ -1666,7 +2520,7 @@ def _process_sheet(
             nums = [
                 j
                 for j, c in enumerate(row)
-                if _is_wholesale_price(c) and j not in addon_skip
+                if _is_wholesale_price(c) and j not in excluded_data
             ]
             add_idxs = [
                 j
@@ -1690,7 +2544,7 @@ def _process_sheet(
             nums = [
                 j
                 for j, c in enumerate(row)
-                if _is_wholesale_price(c) and j not in addon_skip
+                if _is_wholesale_price(c) and j not in excluded_data
             ]
             if nums:
                 cells = _transform_row_prices(row, multiplier, nums, spots=spots, item_hint=label)
@@ -2010,6 +2864,10 @@ def merge_builder_files(
     multiplier: float,
 ) -> ViztechBuildResult:
     key = builder_name.casefold()
+    if key == "kountry knob tables":
+        mains = [p for p in paths if re.search(r"KKT_Pricelist", p.name, re.I)]
+        if mains:
+            paths = mains
     if key == "aj's furniture":
         paths = [
             p

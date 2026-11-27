@@ -414,10 +414,40 @@
     "price_list_date": "2026-05-01"
   },
   {
+    "name": "Kountry Knob Tables",
+    "pdf": "sheets/Kountry_Knob_Tables.pdf",
+    "updated": "2026-11-27",
+    "price_list_date": "2025-04-01"
+  },
+  {
+    "name": "L&N Woodworking",
+    "pdf": "sheets/L_N_Woodworking.pdf",
+    "updated": "2026-11-27",
+    "price_list_date": "2026-10-01"
+  },
+  {
+    "name": "LA Patio Furniture",
+    "pdf": "sheets/LA_Patio_Furniture.pdf",
+    "updated": "2026-11-27",
+    "price_list_date": "2027-01-01"
+  },
+  {
     "name": "Lamb Woodworking",
     "pdf": "sheets/Lamb_Woodworking.pdf",
     "updated": "2026-11-12",
     "price_list_date": "2026-05-01"
+  },
+  {
+    "name": "Lambright Comfort Chairs",
+    "pdf": "sheets/Lambright_Comfort_Chairs.pdf",
+    "updated": "2026-11-27",
+    "price_list_date": "2026-11-01"
+  },
+  {
+    "name": "Lambright Country Chimes",
+    "pdf": "sheets/Lambright_Country_Chimes.pdf",
+    "updated": "2026-11-27",
+    "price_list_date": "2026-08-01"
   },
   {
     "name": "Meadow Wood",
